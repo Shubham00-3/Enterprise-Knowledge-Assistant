@@ -1,121 +1,221 @@
 # Enterprise Knowledge Assistant
 
-Production-shaped RAG assistant for enterprise documents. It uses FastAPI, React/Vite, OpenAI, and Railway Postgres + pgvector. Docker is intentionally not required.
+An enterprise knowledge assistant that answers employee questions from internal documents using Retrieval Augmented Generation (RAG). The project is built as a production-oriented assignment submission: it includes document ingestion, hybrid retrieval, grounded answer generation, source citations, feedback collection, evaluation metrics, and deployment configuration for Vercel + Railway.
 
-## Architecture
+## Architecture Overview
 
-- Frontend: React/Vite on Vercel.
-- Backend: FastAPI on Railway.
-- Store: Railway Postgres + pgvector for documents, chunks, embeddings, chat history, feedback, and eval runs.
-- Retrieval: semantic search plus keyword search, reciprocal rank fusion, optional LLM rerank, grounded generation, citations, and abstention.
+The system has three main runtime parts:
 
-## Local Setup
+- **Frontend:** React/Vite application deployed on Vercel. It provides the chat interface, document status panel, citation cards, confidence/status indicators, and feedback buttons.
+- **Backend:** FastAPI application deployed on Railway. It exposes `/ask`, `/documents`, `/feedback`, `/healthz`, `/readyz`, and admin-protected `/ingest`.
+- **Database and vector store:** Railway Postgres with pgvector. It stores documents, chunks, embeddings, conversations, messages, feedback, and evaluation runs.
+
+```mermaid
+flowchart LR
+  User["Employee"] --> UI["React/Vite UI"]
+  UI --> API["FastAPI API"]
+  API --> DB["Postgres + pgvector"]
+  API --> OAI["OpenAI API"]
+  CLI["Ingestion CLI"] --> DB
+  CLI --> OAI
+```
+
+Request flow:
+
+1. Documents are ingested and split into page-aware chunks.
+2. Chunks are embedded and indexed in Postgres/pgvector.
+3. A user asks a natural-language question.
+4. The backend retrieves relevant chunks using semantic and keyword signals.
+5. The LLM generates an answer only from retrieved context.
+6. The API returns answer, confidence, status, and source citations.
+
+## Setup Instructions
+
+### Prerequisites
+
+- Python 3.11+
+- Node.js 20+
+- OpenAI API key for full model-backed behavior
+- Railway Postgres + pgvector for production deployment
+
+The app can run locally without `OPENAI_API_KEY`; it uses deterministic fallback embeddings and fallback answer generation so the interface and API remain testable.
+
+### Backend
+
+From the repository root:
 
 ```powershell
 Copy-Item .env.example .env
 cd backend
 python -m venv .venv
-.\\.venv\\Scripts\\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 pip install -e .[dev]
-python -m app.cli ingest ..\\data\\sample
-uvicorn app.main:app --reload --port 8000
+python -m app.cli ingest ..\data\sample
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
+
+Backend URLs:
+
+- API docs: `http://127.0.0.1:8000/docs`
+- Readiness: `http://127.0.0.1:8000/readyz`
+
+### Frontend
 
 In another terminal:
 
 ```powershell
 cd frontend
 npm install
-npm run dev
+npm run dev -- --host 127.0.0.1
 ```
 
-Open `http://localhost:5173`.
+Open:
 
-Without `OPENAI_API_KEY`, the backend uses deterministic local embeddings and fallback answer generation so the app remains testable. Add an OpenAI key for the full model-backed RAG flow.
-
-## API
-
-`POST /ask`
-
-```json
-{
-  "question": "What is the employee leave policy?",
-  "conversation_id": null
-}
+```text
+http://127.0.0.1:5173
 ```
 
-Response:
+### Environment Variables
 
-```json
-{
-  "answer": "Employees are eligible for 24 paid leaves annually.",
-  "sources": [{ "document": "HR_Policy_Handbook.md", "page": 1, "snippet": "...", "score": 0.42 }],
-  "confidence": 0.91,
-  "status": "answered",
-  "conversation_id": "...",
-  "message_id": "...",
-  "latency_ms": 812
-}
+Backend:
+
+```env
+DATABASE_URL=
+OPENAI_API_KEY=
+FRONTEND_ORIGIN=
+ADMIN_API_KEY=
+GEN_MODEL=gpt-5.5
+UTILITY_MODEL=gpt-5.4-mini
+EMBED_MODEL=text-embedding-3-large
+EMBED_DIMS=3072
+REQUIRE_AUTH=false
+API_AUTH_TOKEN=
 ```
 
-Other endpoints:
+Frontend:
 
-- `GET /documents`
-- `POST /feedback`
-- `GET /healthz`
-- `GET /readyz`
-- `POST /ingest` with `x-admin-api-key`
+```env
+VITE_API_BASE_URL=
+VITE_API_AUTH_TOKEN=
+```
 
-## Authentication
+### Deployment
 
-Two complementary mechanisms, both off-friendly for the demo:
-
-- **Admin key** (always on): `POST /ingest` requires the `x-admin-api-key` header to match `ADMIN_API_KEY`.
-- **Optional bearer auth on `/ask` and `/feedback`**: disabled by default. Set `REQUIRE_AUTH=true` and `API_AUTH_TOKEN=<token>` to require `Authorization: Bearer <token>` on the query endpoints. The frontend sends it automatically when `VITE_API_AUTH_TOKEN` is set at build time.
-
-## Deployment
-
-### Railway
+Backend deployment target: Railway.
 
 1. Create a Railway project.
 2. Add Railway Postgres with pgvector support.
-3. Set backend env vars:
-   - `DATABASE_URL`
-   - `OPENAI_API_KEY`
-   - `FRONTEND_ORIGIN`
-   - `ADMIN_API_KEY`
-   - `GEN_MODEL` (e.g. `gpt-5.5` for best quality, or `gpt-4.1-nano` for lowest cost)
-   - `UTILITY_MODEL` (e.g. `gpt-5.4-mini`, or `gpt-4.1-nano`)
-   - `EMBED_MODEL=text-embedding-3-large`
-   - `EMBED_DIMS=3072`
-   - Optional: `REQUIRE_AUTH=true` and `API_AUTH_TOKEN=<token>` to lock down `/ask`
+3. Configure backend environment variables.
 4. Deploy from GitHub using `railway.json`.
-5. Run ingestion once against the deployed service or Railway shell.
+5. Run ingestion once against the deployed database.
 
-### Vercel
+Frontend deployment target: Vercel.
 
 1. Create a Vercel project with root directory `frontend`.
 2. Set `VITE_API_BASE_URL` to the Railway backend URL.
-3. Deploy with the default Vite build.
+3. If auth is enabled, set `VITE_API_AUTH_TOKEN`.
+4. Deploy with the default Vite build command.
+
+## Technology Choices
+
+| Area | Choice | Reason |
+|---|---|---|
+| Backend | FastAPI | Fast, typed, simple API development with strong OpenAPI docs. |
+| Frontend | React + Vite | Polished demo UI with lightweight build and clean Vercel deployment. |
+| Database | Railway Postgres | One production database for documents, chat state, feedback, and eval records. |
+| Vector search | pgvector | Avoids a separate vector database while still supporting semantic search. |
+| Vector index | `halfvec(3072)` + HNSW | Fits 3072-dimension embeddings and supports efficient cosine search in Postgres. |
+| Embeddings | `text-embedding-3-large` | Strong semantic retrieval quality; dimensions are configurable. |
+| LLM | Env-configurable OpenAI model | Keeps model choice swappable without changing code. |
+| Evaluation | Custom in-process eval runner | Measures retrieval, citation, abstention, and answer quality without needing a live server. |
+
+## Design Decisions
+
+### RAG Architecture
+
+The backend uses a deterministic RAG pipeline rather than an open-ended agent:
+
+```text
+question -> optional rewrite -> retrieve -> fuse -> rerank -> pack context -> generate answer
+```
+
+This is easier to test, explain, and control. Agents are flexible, but for an enterprise knowledge assistant the priority is grounded, auditable answers.
+
+### Document Ingestion
+
+The ingestion CLI supports PDF, Markdown, text, and DOCX. Each file is checksummed so unchanged documents are skipped on re-ingestion. This prevents duplicate chunks and makes production indexing repeatable.
+
+### Chunking Approach
+
+Chunks are page-aware and section-aware. A chunk does not cross a page boundary, which keeps source citations accurate. The chunker uses a target size with overlap so each chunk has enough context without becoming too broad.
+
+Why not simple fixed-size chunking:
+
+- It can split important sections in awkward places.
+- It can make citations less accurate.
+- It can reduce retrieval relevance.
+
+### Retrieval Strategy
+
+The system uses hybrid retrieval:
+
+- Dense semantic retrieval finds meaning-based matches.
+- Keyword/full-text retrieval catches exact policy names, acronyms, product names, and numbers.
+- Reciprocal Rank Fusion combines both rankings.
+- Optional LLM reranking improves final candidate order.
+
+This gives better relevance than dense-only or keyword-only search.
+
+### Prompt Design
+
+The prompt instructs the model to answer only from supplied context and abstain when evidence is insufficient. The API also returns `status: "insufficient_context"` when retrieval confidence is weak.
+
+This prevents unsupported answers and makes failure cases explicit instead of hiding them behind vague responses.
+
+### Source Citation
+
+Citations come from retrieval metadata, not from the LLM inventing filenames or page numbers. Each source includes:
+
+- document name
+- page
+- snippet
+- relevance score
+
+### Conversation Memory
+
+The backend stores conversations and messages. Follow-up questions can be rewritten using recent conversation history, but final answers still depend on retrieved document evidence.
+
+### Authentication
+
+Two levels are implemented:
+
+- Admin ingestion requires `x-admin-api-key`.
+- Optional bearer auth can protect `/ask` and `/feedback` with `REQUIRE_AUTH=true` and `API_AUTH_TOKEN`.
+
+Full multi-user login and RBAC are left as future work.
 
 ## Evaluation
 
-A self-contained ablation runner exercises the pipeline in-process (no server needed) over a
-27-question labelled set (`evals/dataset.jsonl`) spanning direct, keyword, ambiguous,
-multi-document, and unanswerable questions. From the repo root with the venv active and
-`OPENAI_API_KEY` set:
+The evaluation runner is `evals/run_eval.py`.
 
-```powershell
-python evals\run_eval.py
-```
+It uses a labelled dataset covering:
 
-It ingests into a dedicated eval DB and writes `evals/reports/ablation.json`,
-`evals/reports/latest.json`, and `evals/reports/ablation.md`.
+- direct factual questions
+- keyword-heavy questions
+- ambiguous questions
+- multi-document questions
+- unanswerable questions
 
-**Metrics:** answer accuracy (all expected facts present), document & page Recall@5, MRR,
-abstention accuracy (correct "insufficient context" on unanswerable questions), and latency.
+Metrics:
 
-**Ablation** (gpt-4.1-nano, text-embedding-3-large, 27 questions):
+- answer accuracy
+- document Recall@5
+- page Recall@5
+- MRR
+- abstention accuracy
+- latency
+
+Ablation results from the current sample corpus:
 
 | Config | Answer acc | Doc Recall@5 | Page Recall@5 | MRR | Abstention | Latency (ms) |
 |---|---:|---:|---:|---:|---:|---:|
@@ -123,24 +223,46 @@ abstention accuracy (correct "insufficient context" on unanswerable questions), 
 | +hybrid_rrf | 0.92 | 1.00 | 1.00 | 0.98 | 1.00 | 2605 |
 | +rerank | 0.89 | 1.00 | 1.00 | 1.00 | 1.00 | 3096 |
 
-**What this shows (improvements attempted):** hybrid retrieval (dense + keyword fused with RRF) is
-the biggest lever, lifting answer accuracy from 0.81 to 0.92. LLM listwise re-ranking pushes MRR to
-a perfect 1.00 (ideal ordering) at a small latency cost; on this small corpus its effect on final
-answer accuracy is within one-question noise, and it matters more as the candidate pool grows.
-Page-accurate citations (Page Recall@5 = 1.00) come from chunking page-by-page so a chunk never
-straddles a page boundary. Abstention is perfect on unanswerable and out-of-scope questions.
+What improved:
 
-## Design Decisions
+- Hybrid retrieval gave the largest answer-quality lift.
+- Reranking improved ordering quality, shown by MRR reaching 1.00.
+- Page-aware chunking kept page citation accuracy at 1.00.
+- Abstention worked correctly on out-of-scope questions.
 
-- pgvector keeps deployment simple for the assignment while still supporting production-style semantic retrieval.
-- `halfvec(3072)` plus HNSW is used for Postgres deployments to fit `text-embedding-3-large` (the `vector` type caps index dimensions at 2000; `halfvec` allows up to 4000).
-- Retrieval is index-backed on Postgres: dense candidates come from the HNSW `halfvec` index (`<=>` cosine) and keyword candidates from a `tsvector` GIN index (`websearch_to_tsquery` + `ts_rank`). The two rankings are fused with reciprocal rank fusion and reranked by the utility model. The local SQLite path computes the same fusion in-process so the app runs with zero external services for development.
-- Model routing splits cost: the flagship `GEN_MODEL` writes the grounded answer, while the cheaper `UTILITY_MODEL` handles query rewriting and listwise reranking.
-- Chunking is page-by-page so a chunk never straddles a page boundary, which keeps source citations page-accurate (validated at Page Recall@5 = 1.00).
-- Confidence is a documented heuristic blending top-evidence semantic similarity with the share of answer claims that map back to retrieved chunks — not a calibrated probability.
-- Multi-document reasoning is supported by packing top-ranked chunks from multiple documents into one grounded prompt; the eval set includes cross-document questions to verify it.
-- The backend keeps provider boundaries small: LLM, embeddings, and retrieval are isolated without building a plugin framework.
-- Single-token bearer auth and an admin-key-protected ingest endpoint are implemented; multi-tenant RBAC, OCR, streaming answers, and async ingestion queues are future improvements.
+Run evaluation:
+
+```powershell
+python evals\run_eval.py
+```
+
+Outputs:
+
+- `evals/reports/ablation.json`
+- `evals/reports/latest.json`
+- `evals/reports/ablation.md`
+
+## Limitations
+
+- OCR is not implemented; scanned PDFs require future OCR support.
+- The sample corpus is synthetic and smaller than a real enterprise corpus.
+- Full user authentication, RBAC, and multi-tenant authorization are not implemented.
+- Streaming responses are not implemented in the MVP.
+- Async/background ingestion is not implemented.
+- Redis caching is not implemented.
+- Evaluation uses a labelled sample set; a production system would need ongoing evals and human review.
+
+## Future Improvements
+
+- Add OCR for scanned PDFs.
+- Add background ingestion with a queue for large corpora.
+- Add user login, RBAC, and audit trails.
+- Add streaming responses through `/ask/stream`.
+- Add Redis caching for repeated questions and embeddings.
+- Add admin upload UI for documents.
+- Add observability dashboards for latency, cost, token usage, and answer quality.
+- Move to a dedicated vector database such as Qdrant, Pinecone, or Weaviate if the corpus grows to millions of chunks.
+- Add scheduled evaluation runs and feedback-driven improvement loops.
 
 ## Demo Script
 
@@ -148,6 +270,7 @@ straddles a page boundary. Abstention is perfect on unanswerable and out-of-scop
 2. Ask: "What is the employee paid leave policy?"
 3. Expand the HR source citation.
 4. Ask: "What should API clients do for 429 responses?"
-5. Ask an unsupported question like "What is the lunch menu tomorrow?" and show abstention.
-6. Submit feedback.
-7. Briefly explain ingestion, hybrid retrieval, reranking, grounded generation, and deployment.
+5. Ask an unsupported question like "What is the lunch menu tomorrow?"
+6. Show the `insufficient_context` response.
+7. Submit feedback.
+8. Explain the flow: ingestion, chunking, hybrid retrieval, reranking, grounded generation, citations, and evaluation.
