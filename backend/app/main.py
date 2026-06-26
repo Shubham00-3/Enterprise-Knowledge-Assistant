@@ -1,0 +1,187 @@
+import logging
+from pathlib import Path
+from time import perf_counter
+from uuid import uuid4
+
+import structlog
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+from starlette.responses import JSONResponse
+
+from app.config import Settings, get_settings
+from app.db import get_session, init_local_db, readiness_check
+from app.models import Chunk, Document, Feedback, Message
+from app.rag_core.ingestion.service import ingest_path
+from app.rag_core.pipeline import answer_question
+from app.rag_core.providers import OpenAIEmbeddingProvider, OpenAILLMProvider
+from app.schemas import AskRequest, AskResponse, DocumentStatus, FeedbackRequest, FeedbackResponse
+
+settings = get_settings()
+# Only /ask is rate limited (see decorator below); health checks, /documents and
+# /feedback must stay unthrottled so Railway health probes never get a 429.
+limiter = Limiter(key_func=get_remote_address)
+
+structlog.configure(
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer(),
+    ],
+)
+logger = structlog.get_logger()
+
+app = FastAPI(title=settings.app_name, version="0.1.0")
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+def rate_limit_handler(_: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(status_code=429, content={"detail": f"Rate limit exceeded: {exc.detail}"})
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.frontend_origin, "http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def request_logging(request: Request, call_next):
+    request_id = request.headers.get("x-request-id", str(uuid4()))
+    structlog.contextvars.bind_contextvars(request_id=request_id, path=request.url.path)
+    start = perf_counter()
+    response = await call_next(request)
+    logger.info(
+        "request_complete",
+        method=request.method,
+        status_code=response.status_code,
+        latency_ms=int((perf_counter() - start) * 1000),
+    )
+    response.headers["x-request-id"] = request_id
+    structlog.contextvars.clear_contextvars()
+    return response
+
+
+@app.on_event("startup")
+def startup() -> None:
+    # On Postgres, Alembic owns the schema (incl. the halfvec/tsv columns), so we
+    # skip create_all there. For the local SQLite path we bootstrap the tables.
+    if not settings.is_postgres:
+        init_local_db()
+
+
+def verify_bearer(authorization: str | None, app_settings: Settings) -> None:
+    """Optional bearer-token gate. No-op unless REQUIRE_AUTH is enabled."""
+    if not app_settings.require_auth:
+        return
+    if not app_settings.api_auth_token:
+        raise HTTPException(status_code=500, detail="REQUIRE_AUTH is on but API_AUTH_TOKEN is unset")
+    if authorization != f"Bearer {app_settings.api_auth_token}":
+        raise HTTPException(status_code=401, detail="Missing or invalid bearer token")
+
+
+def require_api_auth(
+    authorization: str | None = Header(default=None),
+    app_settings: Settings = Depends(get_settings),
+) -> None:
+    verify_bearer(authorization, app_settings)
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+def readyz(session: Session = Depends(get_session)) -> dict[str, object]:
+    checks = readiness_check()
+    chunk_count = session.scalar(select(func.count()).select_from(Chunk)) or 0
+    return {
+        "status": "ok" if all(checks.values()) else "degraded",
+        "checks": checks,
+        "chunks": chunk_count,
+        "models": {
+            "generation": settings.gen_model,
+            "utility": settings.utility_model,
+            "embedding": settings.embed_model,
+            "embedding_dims": settings.embed_dims,
+        },
+    }
+
+
+@app.get("/documents", response_model=list[DocumentStatus])
+def documents(session: Session = Depends(get_session)) -> list[DocumentStatus]:
+    rows = session.scalars(select(Document).order_by(Document.created_at.desc())).all()
+    return [
+        DocumentStatus(
+            id=row.id,
+            document=row.filename,
+            doc_type=row.doc_type,
+            num_pages=row.num_pages,
+            status=row.status,
+        )
+        for row in rows
+    ]
+
+
+@app.post("/ask", response_model=AskResponse, dependencies=[Depends(require_api_auth)])
+@limiter.limit(settings.rate_limit)
+def ask(
+    request: Request,
+    payload: AskRequest,
+    session: Session = Depends(get_session),
+    app_settings: Settings = Depends(get_settings),
+) -> AskResponse:
+    if len(payload.question) > app_settings.max_question_chars:
+        raise HTTPException(status_code=422, detail="Question is too long")
+    return answer_question(
+        session=session,
+        question=payload.question,
+        conversation_id=payload.conversation_id,
+        settings=app_settings,
+        embeddings=OpenAIEmbeddingProvider(app_settings),
+        llm=OpenAILLMProvider(app_settings),
+    )
+
+
+@app.post("/feedback", response_model=FeedbackResponse, dependencies=[Depends(require_api_auth)])
+def feedback(payload: FeedbackRequest, session: Session = Depends(get_session)) -> FeedbackResponse:
+    message = session.get(Message, payload.message_id)
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    session.add(Feedback(message_id=message.id, rating=payload.rating, comment=payload.comment))
+    session.commit()
+    return FeedbackResponse(ok=True)
+
+
+@app.post("/ingest")
+def ingest(
+    x_admin_api_key: str | None = Header(default=None),
+    input_path: str = "data/sample",
+    session: Session = Depends(get_session),
+    app_settings: Settings = Depends(get_settings),
+) -> dict[str, int]:
+    if x_admin_api_key != app_settings.admin_api_key:
+        raise HTTPException(status_code=401, detail="Invalid admin key")
+    path = Path(input_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Input path not found")
+    return ingest_path(session, path, OpenAIEmbeddingProvider(app_settings))
+
+
+@app.post("/ask/stream")
+def ask_stream() -> JSONResponse:
+    return JSONResponse(
+        status_code=501,
+        content={"detail": "Streaming is planned as P1. Use POST /ask for the MVP."},
+    )
