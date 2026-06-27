@@ -152,6 +152,20 @@ def test_auth_disabled_returns_seed_owner() -> None:
     assert resolve_owner_id("Bearer anything", settings) == SEED_OWNER_ID
 
 
+def test_settings_cors_origins_include_vercel_previews() -> None:
+    from app.config import Settings
+
+    settings = Settings(
+        frontend_origin="https://enterprise-knowledge-assistant-ebon.vercel.app",
+        frontend_origins="https://enterprise-knowledge-assis-git-demo.vercel.app, http://localhost:5173",
+    )
+
+    assert "https://enterprise-knowledge-assistant-ebon.vercel.app" in settings.cors_allow_origins
+    assert "https://enterprise-knowledge-assis-git-demo.vercel.app" in settings.cors_allow_origins
+    assert settings.cors_allow_origins.count("http://localhost:5173") == 1
+    assert settings.cors_allow_origin_regex == r"https://enterprise-knowledge-assis[a-z0-9-]*\.vercel\.app"
+
+
 def test_auth_enabled_extracts_subject_from_valid_jwt() -> None:
     from types import SimpleNamespace
 

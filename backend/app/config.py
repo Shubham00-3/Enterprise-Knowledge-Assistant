@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     app_name: str = "Enterprise Knowledge Assistant"
     database_url: str = Field(default_factory=_default_database_url)
     frontend_origin: str = "http://localhost:5173"
+    # Extra comma-separated origins for deployed frontends. Vercel creates immutable
+    # preview URLs on every deploy, so we also allow this project's Vercel URL pattern.
+    frontend_origins: str | None = None
+    frontend_origin_regex: str | None = r"https://enterprise-knowledge-assis[a-z0-9-]*\.vercel\.app"
     admin_api_key: str = "change-me"
     openai_api_key: str | None = None
     gen_model: str = "gpt-5.5"
@@ -68,6 +72,32 @@ class Settings(BaseSettings):
         if self.database_url.startswith("postgresql://"):
             return self.database_url.replace("postgresql://", "postgresql+psycopg://", 1)
         return self.database_url
+
+    @property
+    def cors_allow_origins(self) -> list[str]:
+        origins = [
+            self.frontend_origin,
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
+        if self.frontend_origins:
+            origins.extend(origin.strip() for origin in self.frontend_origins.split(","))
+
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for origin in origins:
+            origin = origin.strip().rstrip("/")
+            if origin and origin not in seen:
+                seen.add(origin)
+                normalized.append(origin)
+        return normalized
+
+    @property
+    def cors_allow_origin_regex(self) -> str | None:
+        if not self.frontend_origin_regex:
+            return None
+        value = self.frontend_origin_regex.strip()
+        return value or None
 
 
 @lru_cache

@@ -83,6 +83,8 @@ Backend:
 DATABASE_URL=
 OPENAI_API_KEY=
 FRONTEND_ORIGIN=
+FRONTEND_ORIGINS=
+FRONTEND_ORIGIN_REGEX=https://enterprise-knowledge-assis[a-z0-9-]*\.vercel\.app
 ADMIN_API_KEY=
 GEN_MODEL=gpt-5.5
 UTILITY_MODEL=gpt-5.4-mini
@@ -91,6 +93,8 @@ EMBED_DIMS=3072
 MAX_UPLOAD_MB=10
 # Per-user auth (off by default). When true, all data is scoped to the Supabase user.
 REQUIRE_AUTH=false
+SUPABASE_URL=
+SUPABASE_JWKS_URL=
 SUPABASE_JWT_SECRET=
 SUPABASE_JWT_AUDIENCE=authenticated
 ```
@@ -114,10 +118,11 @@ Backend deployment target: Railway. Database target: Supabase Postgres + pgvecto
 4. Create a Railway project for the FastAPI backend.
 5. Deploy from GitHub using `railway.json`.
 6. Set Railway `DATABASE_URL` to the Supabase connection string.
-7. Apply the schema migrations against the deployed database: `alembic upgrade head` (adds the `owner_id` columns used for per-user isolation).
-8. Run admin ingestion once to seed the shared sample corpus (`owner_id = public-seed`).
+7. Set Railway `FRONTEND_ORIGIN` to the production Vercel URL. Keep `FRONTEND_ORIGIN_REGEX=https://enterprise-knowledge-assis[a-z0-9-]*\.vercel\.app` so Vercel preview deployments can call the API during testing.
+8. Apply the schema migrations against the deployed database: `alembic upgrade head` (adds the `owner_id` columns used for per-user isolation).
+9. Run admin ingestion once to seed the shared sample corpus (`owner_id = public-seed`).
 
-To enable per-user auth (optional): set `REQUIRE_AUTH=true` and `SUPABASE_JWT_SECRET` (Supabase → Project Settings → API → JWT Settings) on Railway, and `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` on Vercel. With auth off, the app runs as a single shared pool exactly as the MVP did.
+To enable per-user auth (optional): set `REQUIRE_AUTH=true` and `SUPABASE_URL` or `SUPABASE_JWKS_URL` on Railway for modern Supabase ES256 tokens. `SUPABASE_JWT_SECRET` remains supported as a legacy HS256 fallback. Set `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` on Vercel. With auth off, the app runs as a single shared pool exactly as the MVP did.
 
 Frontend deployment target: Vercel.
 
@@ -206,7 +211,7 @@ The backend stores conversations and messages. Follow-up questions can be rewrit
 The app supports per-user data isolation backed by Supabase Auth:
 
 - Admin bulk ingestion requires `x-admin-api-key` and seeds the shared sample corpus.
-- When `REQUIRE_AUTH=true`, `/ask`, `/documents`, `/upload`, and `/feedback` require a valid Supabase JWT. The backend verifies the token (`SUPABASE_JWT_SECRET`) and scopes every document, chunk, query, and upload to that user's id (`sub`). Retrieval SQL filters on `owner_id`, so one user's question can never surface another user's chunks (see `backend/tests/test_isolation.py`).
+- When `REQUIRE_AUTH=true`, `/ask`, `/documents`, `/upload`, and `/feedback` require a valid Supabase JWT. The backend verifies modern Supabase ES256 tokens through `SUPABASE_URL`/`SUPABASE_JWKS_URL`, with `SUPABASE_JWT_SECRET` retained only as the legacy HS256 fallback. Every document, chunk, query, and upload is scoped to that user's id (`sub`). Retrieval SQL filters on `owner_id`, so one user's question can never surface another user's chunks (see `backend/tests/test_isolation.py`).
 - When `REQUIRE_AUTH=false` (default), all data belongs to a single seed user and the app behaves like the original single-pool MVP.
 
 Authenticated users upload their own documents via `POST /upload` (PDF/Markdown/text/DOCX). The document is created immediately as `processing` and embedded in a background task, so large files do not block the request; the UI polls `/documents` until the status flips to `indexed`.
