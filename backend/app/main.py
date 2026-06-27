@@ -136,6 +136,11 @@ def documents(
     ]
 
 
+# Cap how many chunks one artifact response returns so a very large document
+# can't dump its entire body into a single payload (and the DOM) at once.
+ARTIFACT_MAX_CHUNKS = 300
+
+
 @app.get("/documents/{document_id}/artifact", response_model=DocumentArtifact)
 def document_artifact(
     document_id: str,
@@ -147,10 +152,16 @@ def document_artifact(
     )
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    total_chunks = session.scalar(
+        select(func.count())
+        .select_from(Chunk)
+        .where(Chunk.document_id == document.id, Chunk.owner_id == owner_id)
+    ) or 0
     chunks = session.scalars(
         select(Chunk)
         .where(Chunk.document_id == document.id, Chunk.owner_id == owner_id)
         .order_by(Chunk.chunk_index.asc())
+        .limit(ARTIFACT_MAX_CHUNKS)
     ).all()
     return DocumentArtifact(
         id=document.id,
@@ -159,6 +170,7 @@ def document_artifact(
         doc_type=document.doc_type,
         num_pages=document.num_pages,
         status=document.status,
+        truncated=total_chunks > len(chunks),
         chunks=[
             ArtifactChunk(
                 chunk_id=chunk.id,

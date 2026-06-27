@@ -14,6 +14,7 @@ class AnswerResult:
     answer: str
     confidence: float
     status: str
+    groundedness: float | None
     # chunk_ids the model actually cited, in claim order; drives which sources are shown.
     cited_chunk_ids: list[str]
 
@@ -29,6 +30,7 @@ def generate_answer(
             "I could not find this information in the knowledge base.",
             0.0,
             "insufficient_context",
+            None,
             [],
         )
 
@@ -54,15 +56,22 @@ def generate_answer(
     grounded_ratio = groundedness_ratio(result, chunks) if settings.enable_groundedness_gate else 1.0
     confidence = confidence_score(chunks[0].similarity, grounded_ratio)
     if insufficient:
-        return AnswerResult(answer.strip(), round(min(confidence, 0.3), 2), "insufficient_context", [])
+        return AnswerResult(
+            answer.strip(),
+            round(min(confidence, 0.3), 2),
+            "insufficient_context",
+            None,
+            [],
+        )
     if grounded_ratio < settings.groundedness_threshold:
         return AnswerResult(
             "I could not find enough supported information in the knowledge base.",
             round(min(confidence, 0.3), 2),
             "insufficient_context",
+            None,
             [],
         )
-    return AnswerResult(answer.strip(), confidence, "answered", cited)
+    return AnswerResult(answer.strip(), confidence, "answered", round(grounded_ratio, 2), cited)
 
 
 def fallback_answer(question: str, chunks: list[RetrievedChunk]) -> str:

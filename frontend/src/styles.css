@@ -10,6 +10,7 @@
   --amber: #9a6700;
   --amber-bg: #fff7e6;
   --radius: 14px;
+  --artifact-width: 460px;
   color: var(--text);
   background: var(--bg);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
@@ -44,6 +45,13 @@ input {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  transition: padding-right 0.2s ease;
+}
+
+/* When the artifact is open, reserve the right gutter so the thread reflows into
+   a split view (content shrinks left) instead of sitting behind the panel. */
+.page.artifact-open {
+  padding-right: var(--artifact-width);
 }
 
 /* Top bar */
@@ -664,12 +672,12 @@ input {
   right: 0;
   bottom: 0;
   z-index: 20;
-  width: min(460px, 100vw);
+  width: var(--artifact-width);
   display: flex;
   flex-direction: column;
   background: var(--bg);
   border-left: 1px solid var(--border);
-  box-shadow: -12px 0 34px rgba(15, 23, 42, 0.14);
+  box-shadow: -6px 0 20px rgba(15, 23, 42, 0.06);
 }
 
 .artifact-header {
@@ -777,6 +785,27 @@ input {
   white-space: pre-wrap;
 }
 
+/* The exact referenced text within a cited chunk. */
+.cited-text {
+  background: #ffe39e;
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.artifact-note {
+  margin-top: 4px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--text-soft);
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  text-align: center;
+}
+
 /* Docked composer */
 .composer-dock {
   position: sticky;
@@ -803,6 +832,10 @@ input {
   }
   .question {
     font-size: 21px;
+  }
+  /* Below this width the panel overlays full-screen, so don't reserve a gutter. */
+  .page.artifact-open {
+    padding-right: 0;
   }
   .artifact-panel {
     width: 100vw;

@@ -42,6 +42,7 @@ export function App() {
     error: "",
     highlightChunkId: null,
     highlightChunkIds: [],
+    highlightSnippets: {},
   });
   const threadEndRef = useRef(null);
   const fileRef = useRef(null);
@@ -166,14 +167,16 @@ export function App() {
   async function openArtifact(source) {
     if (!source?.document_id) return;
     const highlightChunkIds = source.chunk_ids || (source.chunk_id ? [source.chunk_id] : []);
-    setArtifact({
+    const highlightSnippets =
+      source.chunk_snippets ||
+      (source.chunk_id && source.snippet ? { [source.chunk_id]: source.snippet } : {});
+    const base = {
       open: true,
-      loading: true,
-      data: null,
-      error: "",
       highlightChunkId: source.chunk_id,
       highlightChunkIds,
-    });
+      highlightSnippets,
+    };
+    setArtifact({ ...base, loading: true, data: null, error: "" });
     try {
       const res = await fetch(`${API_BASE}/documents/${source.document_id}/artifact`, {
         headers: authHeaders(false),
@@ -183,23 +186,9 @@ export function App() {
         throw new Error(detail.detail || "Could not open the document.");
       }
       const data = await res.json();
-      setArtifact({
-        open: true,
-        loading: false,
-        data,
-        error: "",
-        highlightChunkId: source.chunk_id,
-        highlightChunkIds,
-      });
+      setArtifact({ ...base, loading: false, data, error: "" });
     } catch (err) {
-      setArtifact({
-        open: true,
-        loading: false,
-        data: null,
-        error: err.message,
-        highlightChunkId: source.chunk_id,
-        highlightChunkIds,
-      });
+      setArtifact({ ...base, loading: false, data: null, error: err.message });
     }
   }
 
@@ -211,6 +200,7 @@ export function App() {
       error: "",
       highlightChunkId: null,
       highlightChunkIds: [],
+      highlightSnippets: {},
     });
   }
 
@@ -236,7 +226,7 @@ export function App() {
   const hasThread = entries.length > 0;
 
   return (
-    <div className="page">
+    <div className={`page${artifact.open ? " artifact-open" : ""}`}>
       <header className="topbar">
         <div className="wordmark">
           <Sparkles size={18} />
@@ -444,7 +434,11 @@ function CitationStrip({ sources, onOpenArtifact }) {
             key={citation.document_id || citation.document}
             className="citation-chip"
             onClick={() =>
-              onOpenArtifact({ ...citation.primary, chunk_ids: citation.chunk_ids })
+              onOpenArtifact({
+                ...citation.primary,
+                chunk_ids: citation.chunk_ids,
+                chunk_snippets: citation.snippets,
+              })
             }
             title={`${citation.document}${citation.primary.page ? `, page ${citation.primary.page}` : ""}`}
           >
@@ -461,22 +455,22 @@ function CitationStrip({ sources, onOpenArtifact }) {
 function AnswerMetrics({ answer }) {
   const metrics = answer.metrics || {};
   const confidence = metrics.confidence ?? answer.confidence ?? 0;
+  const groundedness = metrics.groundedness;
   const citationCount = metrics.citation_count ?? answer.sources?.length ?? 0;
-  const topSourceScore = metrics.top_source_score;
   const status = metrics.status ?? answer.status;
   const latency = metrics.latency_ms ?? answer.latency_ms;
 
   return (
     <div className="metric-row" aria-label="Answer metrics">
       <span className="metric-chip">
-        {Math.round(confidence * 100)}% confidence
+        Confidence {Math.round(confidence * 100)}%
+      </span>
+      <span className="metric-chip">
+        Grounded {typeof groundedness === "number" ? `${Math.round(groundedness * 100)}%` : "n/a"}
       </span>
       <span className="metric-chip">{citationCount} citations</span>
-      <span className="metric-chip">
-        top score {typeof topSourceScore === "number" ? topSourceScore.toFixed(2) : "n/a"}
-      </span>
       <span className={`metric-chip ${status}`}>{statusLabel(status)}</span>
-      <span className="metric-chip">{latency} ms</span>
+      <span className="metric-chip">{formatLatency(latency)}</span>
     </div>
   );
 }
@@ -522,6 +516,9 @@ function DocumentArtifactPanel({ artifact, onClose }) {
           document?.chunks.map((chunk) => {
             const active = artifact.highlightChunkIds?.includes(chunk.chunk_id);
             const scrollTarget = chunk.chunk_id === artifact.highlightChunkId;
+            const parts = active
+              ? highlightParts(chunk.content, artifact.highlightSnippets?.[chunk.chunk_id])
+              : null;
             return (
               <section
                 key={chunk.chunk_id}
@@ -532,10 +529,23 @@ function DocumentArtifactPanel({ artifact, onClose }) {
                   <span>{chunk.section_title || `Section ${chunk.chunk_index + 1}`}</span>
                   <span>p.{chunk.page}</span>
                 </div>
-                <p>{chunk.content}</p>
+                {parts ? (
+                  <p>
+                    {parts.before}
+                    <mark className="cited-text">{parts.match}</mark>
+                    {parts.after}
+                  </p>
+                ) : (
+                  <p>{chunk.content}</p>
+                )}
               </section>
             );
           })}
+        {!artifact.loading && !artifact.error && document?.truncated && (
+          <div className="artifact-note">
+            Showing the first {document.chunks.length} sections of this document.
+          </div>
+        )}
       </div>
     </aside>
   );
@@ -553,12 +563,16 @@ function groupSources(sources) {
         count: 1,
         primary: source,
         chunk_ids: source.chunk_id ? [source.chunk_id] : [],
+        snippets: source.chunk_id && source.snippet ? { [source.chunk_id]: source.snippet } : {},
       });
       continue;
     }
     existing.count += 1;
     if (source.chunk_id && !existing.chunk_ids.includes(source.chunk_id)) {
       existing.chunk_ids.push(source.chunk_id);
+    }
+    if (source.chunk_id && source.snippet) {
+      existing.snippets[source.chunk_id] = source.snippet;
     }
     if ((source.score ?? 0) > (existing.primary.score ?? 0)) {
       existing.primary = source;
@@ -567,7 +581,78 @@ function groupSources(sources) {
   return [...grouped.values()];
 }
 
+// Locate the cited snippet inside a chunk's raw content so we can highlight the
+// exact referenced text, not the whole chunk. The backend snippet() cleans the
+// chunk (strips markdown heading markers, collapses whitespace) before truncating,
+// so we apply the same cleaning while tracking each cleaned char's original index,
+// then map the matched span back onto the raw content. Returns null (whole-chunk
+// highlight fallback) when no reliable match is found.
+function highlightParts(content, snippet) {
+  if (!content || !snippet) return null;
+  const needle = snippet.replace(/\.\.\.$/, "").trim();
+  if (needle.length < 2) return null;
+  const { norm, map } = cleanWithMap(content);
+  const pos = norm.indexOf(needle);
+  if (pos < 0) return null;
+  const start = map[pos];
+  const end = map[pos + needle.length - 1] + 1;
+  return {
+    before: content.slice(0, start),
+    match: content.slice(start, end),
+    after: content.slice(end),
+  };
+}
+
+function cleanWithMap(text) {
+  const chars = [];
+  const map = []; // map[i] = index in `text` of the i-th cleaned char
+  let i = 0;
+  let lineStart = true;
+  while (i < text.length) {
+    if (lineStart) {
+      // Drop a leading markdown heading marker: optional spaces, 1-6 '#', then a space.
+      let j = i;
+      while (j < text.length && (text[j] === " " || text[j] === "\t")) j += 1;
+      let hashes = 0;
+      while (j < text.length && text[j] === "#" && hashes < 6) {
+        j += 1;
+        hashes += 1;
+      }
+      if (hashes >= 1 && j < text.length && (text[j] === " " || text[j] === "\t")) {
+        while (j < text.length && (text[j] === " " || text[j] === "\t")) j += 1;
+        i = j;
+        lineStart = false;
+        continue;
+      }
+      lineStart = false;
+    }
+    const ch = text[i];
+    if (/\s/.test(ch)) {
+      if (chars.length > 0 && chars[chars.length - 1] !== " ") {
+        chars.push(" ");
+        map.push(i);
+      }
+      if (ch === "\n") lineStart = true;
+    } else {
+      chars.push(ch);
+      map.push(i);
+    }
+    i += 1;
+  }
+  while (chars.length > 0 && chars[chars.length - 1] === " ") {
+    chars.pop();
+    map.pop();
+  }
+  return { norm: chars.join(""), map };
+}
+
 function statusLabel(status) {
-  if (status === "insufficient_context") return "needs more context";
-  return "answered";
+  if (status === "insufficient_context") return "Needs more context";
+  return "Answered";
+}
+
+function formatLatency(latency) {
+  if (typeof latency !== "number") return "n/a";
+  if (latency < 1000) return `${latency}ms`;
+  return `${(latency / 1000).toFixed(1)}s`;
 }

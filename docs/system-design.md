@@ -16,7 +16,7 @@ flowchart LR
   CLI --> LLM
 ```
 
-The frontend is a React/Vite app that provides the chat experience, document status panel, citation cards, confidence/status display, and user feedback controls. The backend is a stateless FastAPI service that owns ingestion, retrieval, answer generation, feedback, and health checks. Supabase Postgres with pgvector is the single durable store for documents, chunks, embeddings, conversations, messages, feedback, and evaluation results.
+The frontend is a React/Vite app that provides the chat experience, document status panel, lightweight citation chips, answer quality metrics, artifact viewing, and user feedback controls. The backend is a stateless FastAPI service that owns ingestion, retrieval, answer generation, feedback, and health checks. Supabase Postgres with pgvector is the single durable store for documents, chunks, embeddings, conversations, messages, feedback, and evaluation results.
 
 This architecture keeps deployment simple: Vercel hosts the frontend, Railway hosts the Python FastAPI backend, and Supabase provides managed Postgres plus pgvector. Docker is not required.
 
@@ -45,7 +45,7 @@ The important design choice is page-aware chunking. Because chunks do not cross 
 6. The utility model can rerank the top candidates.
 7. The backend packs the strongest chunks into the prompt.
 8. The generation model answers only from the supplied context.
-9. The backend returns answer, sources, confidence, status, conversation ID, and latency.
+9. The backend returns answer, sources, live quality metrics, status, conversation ID, and latency.
 10. The user can submit feedback through `/feedback`.
 
 If retrieval confidence is weak, the backend returns `status: "insufficient_context"` instead of forcing the model to guess.
@@ -59,8 +59,9 @@ The frontend is a React/Vite application. It is intentionally not a marketing pa
 - indexed document list
 - chat input
 - answer card
-- confidence badge
-- source snippets
+- confidence and groundedness metrics
+- lightweight citation chips
+- document artifact viewer with highlighted cited text
 - useful/not useful feedback buttons
 
 The frontend uses `VITE_API_BASE_URL` to call the deployed backend and can optionally send `VITE_API_AUTH_TOKEN` when bearer auth is enabled.
@@ -101,11 +102,13 @@ The system can expand a question into several alternative phrasings, retrieve fo
 
 ### Generation Layer
 
-The generation layer builds a grounded prompt using only retrieved chunks. It instructs the model to answer from context and abstain when context is insufficient. Confidence is a heuristic based on retrieval strength and groundedness, not a calibrated probability.
+The generation layer builds a grounded prompt using only retrieved chunks. It instructs the model to answer from context and abstain when context is insufficient. Confidence is a heuristic based on retrieval strength and groundedness, not a calibrated probability. Groundedness is reported as a live evidence signal: the share of answer claims that map back to retrieved chunks.
 
 ### Evaluation Layer
 
 The evaluation runner uses labelled questions to measure answer accuracy, citation quality, retrieval ranking, abstention behavior, and latency. It also runs ablations across dense-only, hybrid, and reranked retrieval so improvements are measurable rather than assumed.
+
+Correctness is intentionally an offline/admin eval concept. The sample corpus can report answer accuracy because it has labelled questions, expected answer snippets, and gold source pages. User-uploaded documents do not have automatic ground truth, so the live product shows confidence, groundedness, citations, latency, status, and feedback instead of claiming per-answer correctness. True correctness for user corpora would require owner-scoped labelled eval sets stored and reported through `eval_runs`.
 
 ## Scalability Considerations
 
@@ -119,7 +122,7 @@ Scaling paths:
 - **Higher query traffic:** add Redis caching for repeated questions and embeddings.
 - **Millions of chunks:** move vector search to a dedicated vector database such as Qdrant, Pinecone, or Weaviate.
 - **Enterprise security:** add user login, RBAC, tenant isolation, and audit logs.
-- **Operations:** add metrics for latency, token usage, model cost, retrieval quality, and feedback trends.
+- **Operations:** add metrics for latency, token usage, model cost, retrieval quality, groundedness, correctness evals where labelled data exists, and feedback trends.
 - **Document variety:** add OCR for scanned PDFs and more robust file parsing.
 
 The current design is intentionally modular enough to support these upgrades without changing the public API contract.

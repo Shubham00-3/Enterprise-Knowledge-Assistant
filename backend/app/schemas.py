@@ -20,8 +20,8 @@ class Source(BaseModel):
 
 class AnswerMetrics(BaseModel):
     confidence: float
+    groundedness: float | None = None
     citation_count: int
-    top_source_score: float | None = None
     status: Literal["answered", "insufficient_context"]
     latency_ms: int
 
@@ -60,6 +60,7 @@ class DocumentArtifact(BaseModel):
     doc_type: str
     num_pages: int
     status: str
+    truncated: bool = False
     chunks: list[ArtifactChunk]
 
 

@@ -58,8 +58,8 @@ def answer_question(
     latency_ms = int((time.perf_counter() - started) * 1000)
     metrics = AnswerMetrics(
         confidence=result.confidence,
+        groundedness=result.groundedness,
         citation_count=len(sources),
-        top_source_score=max((source.score for source in sources), default=None),
         status=result.status,
         latency_ms=latency_ms,
     )

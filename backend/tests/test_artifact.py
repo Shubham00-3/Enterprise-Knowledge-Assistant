@@ -100,6 +100,25 @@ def test_artifact_returns_ordered_chunks_for_current_owner() -> None:
     assert body["document"] == "HR.md"
     assert [chunk["chunk_id"] for chunk in body["chunks"]] == ["alice-c1", "alice-c2"]
     assert body["chunks"][0]["section_title"] == "Paid Leave"
+    assert body["truncated"] is False
+
+
+def test_artifact_returns_404_for_unknown_document() -> None:
+    TestSession = _make_session()
+    previous = dict(app.dependency_overrides)
+
+    def _get_session() -> Generator[Session, None, None]:
+        with TestSession() as session:
+            yield session
+
+    try:
+        app.dependency_overrides[get_session] = _get_session
+        app.dependency_overrides[current_owner_id] = lambda: "alice"
+        response = TestClient(app).get("/documents/does-not-exist/artifact")
+    finally:
+        app.dependency_overrides = previous
+
+    assert response.status_code == 404
 
 
 def test_artifact_rejects_documents_outside_owner_scope() -> None:

@@ -91,9 +91,16 @@ def test_ask_pipeline_never_leaks_other_users_sources() -> None:
     assert resp.sources[0].document_id == "alice-doc"
     assert resp.sources[0].chunk_id == "alice-chunk"
     assert resp.metrics.citation_count == 1
-    assert resp.metrics.top_source_score is not None
+    assert resp.metrics.groundedness == 1.0
     assert resp.metrics.status == resp.status
     assert resp.metrics.latency_ms == resp.latency_ms
+    assert set(resp.metrics.model_dump()) == {
+        "confidence",
+        "groundedness",
+        "citation_count",
+        "status",
+        "latency_ms",
+    }
 
 
 def test_insufficient_context_returns_no_sources_and_valid_metrics() -> None:
@@ -106,10 +113,17 @@ def test_insufficient_context_returns_no_sources_and_valid_metrics() -> None:
     assert resp.status == "insufficient_context"
     assert resp.sources == []
     assert resp.metrics.confidence == 0.0
+    assert resp.metrics.groundedness is None
     assert resp.metrics.citation_count == 0
-    assert resp.metrics.top_source_score is None
     assert resp.metrics.status == resp.status
     assert resp.metrics.latency_ms == resp.latency_ms
+    assert set(resp.metrics.model_dump()) == {
+        "confidence",
+        "groundedness",
+        "citation_count",
+        "status",
+        "latency_ms",
+    }
 
 
 def test_bob_query_cannot_see_alice_data() -> None:

@@ -6,7 +6,7 @@ An enterprise knowledge assistant that answers employee questions from internal 
 
 The system has three main runtime parts:
 
-- **Frontend:** React/Vite application deployed on Vercel. It provides the chat interface, Supabase sign-in, document upload, citation cards, confidence/status indicators, and feedback buttons.
+- **Frontend:** React/Vite application deployed on Vercel. It provides the chat interface, Supabase sign-in, document upload, lightweight citation chips, answer quality metrics, and feedback buttons.
 - **Backend:** FastAPI application deployed on Railway. It exposes `/ask`, `/documents`, `/upload`, `/feedback`, `/healthz`, `/readyz`, and admin-protected `/ingest`.
 - **Database and vector store:** Supabase Postgres with pgvector. It stores documents, chunks, embeddings, conversations, messages, feedback, and evaluation runs.
 
@@ -27,7 +27,7 @@ Request flow:
 3. A user asks a natural-language question.
 4. The backend retrieves relevant chunks using semantic and keyword signals.
 5. The LLM generates an answer only from retrieved context.
-6. The API returns answer, confidence, status, and source citations.
+6. The API returns answer, citations, live quality metrics, status, and latency.
 
 ## Setup Instructions
 
@@ -185,12 +185,17 @@ This prevents unsupported answers and makes failure cases explicit instead of hi
 
 ### Source Citation
 
-Citations come from retrieval metadata, not from the LLM inventing filenames or page numbers. Each source includes:
+Citations come from retrieval metadata, not from the LLM inventing filenames or page numbers. The UI shows compact document-name citations, and clicking a citation opens the indexed-text artifact for that document. Each source still carries stable document/chunk IDs so the artifact can highlight the referenced section.
 
-- document name
-- page
-- snippet
-- relevance score
+The live answer metrics are product-safe evidence signals:
+
+- confidence: bounded heuristic, not a calibrated probability
+- groundedness: share of answer claims mapped to retrieved chunks
+- citation count
+- answer status
+- latency
+
+Raw retrieval scores are intentionally not shown in the UI because they are debug values and are easy to misinterpret.
 
 ### Conversation Memory
 
@@ -229,6 +234,20 @@ Metrics:
 - abstention accuracy
 - latency
 
+These are offline correctness evals for the labelled sample corpus. They are valid because `evals/dataset.jsonl` contains expected answer snippets and gold source documents/pages. For arbitrary user-uploaded documents, the app cannot honestly compute true correctness without labelled questions and expected answers. In the live chat UI, uploaded documents use confidence, groundedness, citations, status, latency, and user feedback as quality signals.
+
+Future user-document correctness evals would require an owner-scoped labelled eval set, for example:
+
+```json
+{
+  "question": "What is the PTO policy?",
+  "expected_answer_contains": ["24 paid leaves"],
+  "gold_sources": [{ "document": "HR.md", "page": 1 }]
+}
+```
+
+Those eval runs should be stored in `eval_runs` and reported in an admin/evaluation view, not as per-answer live correctness.
+
 Ablation results from the current sample corpus:
 
 | Config | Answer acc | Doc Recall@5 | Page Recall@5 | MRR | Abstention | Latency (ms) |
@@ -265,7 +284,7 @@ Outputs:
 - Conversations and messages are not yet owner-scoped (documents and chunks are).
 - Streaming responses are not implemented in the MVP.
 - Redis caching is not implemented.
-- Evaluation uses a labelled sample set; a production system would need ongoing evals and human review.
+- Evaluation uses a labelled sample set; user-uploaded documents need their own labelled eval sets before true correctness can be reported.
 
 ## Future Improvements
 
@@ -278,7 +297,7 @@ Outputs:
 - Add Redis caching for repeated questions and embeddings.
 - Add observability dashboards for latency, cost, token usage, and answer quality.
 - Move to a dedicated vector database such as Qdrant, Pinecone, or Weaviate if the corpus grows to millions of chunks.
-- Add scheduled evaluation runs and feedback-driven improvement loops.
+- Add owner-scoped labelled eval sets, scheduled evaluation runs, and feedback-driven improvement loops.
 
 ## Demo Script
 

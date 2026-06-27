@@ -61,6 +61,7 @@ def test_generation_abstains_on_weak_evidence() -> None:
     result = generate_answer("Unknown?", [], EmptyLLM(), SettingsStub())
     assert result.status == "insufficient_context"
     assert result.confidence == 0.0
+    assert result.groundedness is None
     assert "could not find" in result.answer.lower()
     assert result.cited_chunk_ids == []
 
@@ -78,6 +79,7 @@ def test_generation_falls_back_with_grounded_context() -> None:
     result = generate_answer("Leave?", [chunk], EmptyLLM(), SettingsStub())
     assert result.status == "answered"
     assert result.confidence > 0
+    assert result.groundedness == 1.0
     assert "24 paid leaves" in result.answer
 
 
@@ -103,6 +105,7 @@ def test_sources_limited_to_cited_chunks() -> None:
     ]
     result = generate_answer("paid leave?", chunks, CitingLLM(["hr1"]), SettingsStub())
     assert result.status == "answered"
+    assert result.groundedness == 1.0
     assert result.cited_chunk_ids == ["hr1"]
 
     selected = _select_source_chunks(chunks, result)
