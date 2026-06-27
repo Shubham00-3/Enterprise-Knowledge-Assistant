@@ -210,7 +210,11 @@ def ask(
 
 
 @app.post("/feedback", response_model=FeedbackResponse)
-def feedback(payload: FeedbackRequest, session: Session = Depends(get_session)) -> FeedbackResponse:
+def feedback(
+    payload: FeedbackRequest,
+    session: Session = Depends(get_session),
+    _owner_id: str = Depends(current_owner_id),
+) -> FeedbackResponse:
     message = session.get(Message, payload.message_id)
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")

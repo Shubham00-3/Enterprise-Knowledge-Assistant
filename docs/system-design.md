@@ -2,127 +2,104 @@
 
 ## High-Level Architecture
 
-The Enterprise Knowledge Assistant is a Retrieval Augmented Generation (RAG) application for answering questions from internal company documents. It is designed as a deployable production-style system while keeping the implementation compact enough for an assignment.
+The Enterprise Knowledge Assistant is a production-shaped Retrieval Augmented Generation (RAG) application for answering questions from enterprise documents. It is deployed as three managed services:
 
-Runtime architecture:
+- **Frontend:** React/Vite on Vercel
+- **Backend:** FastAPI on Railway
+- **Database/vector store:** Supabase Postgres with pgvector
 
 ```mermaid
 flowchart LR
-  User["Employee"] --> UI["React/Vite Frontend on Vercel"]
-  UI --> API["FastAPI Backend on Railway"]
+  User["Authenticated User"] --> UI["React/Vite Frontend"]
+  UI --> Auth["Supabase Auth"]
+  UI --> API["FastAPI Backend"]
   API --> DB["Supabase Postgres + pgvector"]
   API --> LLM["OpenAI Models"]
-  CLI["Ingestion CLI"] --> DB
-  CLI --> LLM
+  CLI["Admin Ingestion CLI"] --> DB
+
+  DB --> Docs["documents"]
+  DB --> Chunks["chunks + embeddings + tsv"]
+  DB --> Messages["conversations + messages"]
+  DB --> Feedback["feedback"]
+  DB --> Evals["eval_runs"]
 ```
 
-The frontend is a React/Vite app that provides the chat experience, document status panel, lightweight citation chips, answer quality metrics, artifact viewing, and user feedback controls. The backend is a stateless FastAPI service that owns ingestion, retrieval, answer generation, feedback, and health checks. Supabase Postgres with pgvector is the single durable store for documents, chunks, embeddings, conversations, messages, feedback, and evaluation results.
-
-This architecture keeps deployment simple: Vercel hosts the frontend, Railway hosts the Python FastAPI backend, and Supabase provides managed Postgres plus pgvector. Docker is not required.
+The backend is stateless: all durable state lives in Supabase Postgres. This keeps the deployment simple and makes the API tier horizontally scalable. Postgres stores both traditional application data and vector-search data, avoiding a separate vector database for the assignment scale.
 
 ## Data Flow
 
 ### Ingestion Flow
 
-1. Documents are placed in `data/sample` or another configured input folder.
-2. The ingestion CLI loads supported files: PDF, Markdown, TXT, and DOCX.
-3. Each document is checksummed to make ingestion idempotent.
-4. Text is parsed with page metadata preserved.
-5. Text is split into page-aware, section-aware chunks.
-6. Each chunk is embedded with the configured embedding model.
-7. Chunks, metadata, and embeddings are stored in Postgres.
-8. In Postgres deployments, embeddings are indexed with pgvector using `halfvec(3072)` and HNSW.
+1. The admin ingestion CLI loads the bundled sample corpus from `data/sample`, or a signed-in user uploads a document from the UI.
+2. Supported formats are PDF, Markdown, TXT, and DOCX.
+3. Each file is checksummed. If the same owner ingests the same file again, it is skipped instead of duplicated.
+4. The loader extracts text while preserving page metadata where available.
+5. The chunker creates page-aware, section-aware chunks. Chunks intentionally preserve citation metadata so answers can point back to exact pages/sections.
+6. The embedding provider generates vectors in batches.
+7. The backend stores document metadata, chunk text, full-text search data, and embeddings in Postgres.
+8. Supabase pgvector indexes embeddings with `halfvec(3072)` and HNSW for efficient semantic retrieval.
 
-The important design choice is page-aware chunking. Because chunks do not cross page boundaries, the system can return reliable document and page citations.
-
-### Question Answering Flow
+### Answering Flow
 
 1. The user asks a question in the frontend.
-2. The frontend calls `POST /ask`.
-3. The backend optionally rewrites follow-up questions using recent conversation history.
-4. The retrieval layer gets dense semantic candidates and keyword candidates.
-5. Reciprocal Rank Fusion combines the two rankings.
-6. The utility model can rerank the top candidates.
-7. The backend packs the strongest chunks into the prompt.
-8. The generation model answers only from the supplied context.
-9. The backend returns answer, sources, live quality metrics, status, conversation ID, and latency.
-10. The user can submit feedback through `/feedback`.
+2. The frontend sends `POST /ask` with the Supabase access token.
+3. The backend verifies the JWT and computes the readable owner set:
+   - `public-seed` shared sample corpus
+   - current user's uploaded documents
+4. Recent conversation history can rewrite follow-up questions into standalone search queries.
+5. Retrieval runs in two channels:
+   - dense semantic retrieval with pgvector
+   - keyword retrieval with Postgres full-text search
+6. Reciprocal Rank Fusion combines both rankings.
+7. The utility model can rerank the strongest candidate chunks.
+8. The generation model receives only retrieved evidence and must cite chunk IDs.
+9. The backend returns the answer, compact citations, confidence, groundedness, citation count, status, and latency.
+10. The frontend displays lightweight document-name citations. Clicking one opens an indexed-text artifact viewer and highlights the referenced chunk.
 
-If retrieval confidence is weak, the backend returns `status: "insufficient_context"` instead of forcing the model to guess.
+If retrieval evidence is weak or the model marks the answer unsupported, the API returns `status: "insufficient_context"` instead of generating a guessed answer.
 
 ## Component Explanation
 
 ### Frontend
 
-The frontend is a React/Vite application. It is intentionally not a marketing page; the first screen is the actual assistant. It shows:
-
-- indexed document list
-- chat input
-- answer card
-- confidence and groundedness metrics
-- lightweight citation chips
-- document artifact viewer with highlighted cited text
-- useful/not useful feedback buttons
-
-The frontend uses `VITE_API_BASE_URL` to call the deployed backend and can optionally send `VITE_API_AUTH_TOKEN` when bearer auth is enabled.
+The frontend is the first-screen assistant experience, not a landing page. It includes sign-in, document upload, document status, chat, compact citations, answer metrics, artifact viewing, loading/error states, and thumbs up/down feedback. Vite keeps the build simple for Vercel.
 
 ### Backend API
 
-The FastAPI backend exposes:
+FastAPI exposes:
 
-- `POST /ask` for question answering
+- `POST /ask` for grounded question answering
 - `GET /documents` for indexed document status
+- `GET /documents/{document_id}/artifact` for citation artifact viewing
+- `POST /upload` for authenticated user uploads
 - `POST /feedback` for answer feedback
-- `GET /healthz` for liveness
-- `GET /readyz` for database/model readiness
-- `POST /ingest` for admin-protected ingestion
+- `GET /healthz` and `GET /readyz` for deployment checks
+- `POST /ingest` for admin-protected sample corpus ingestion
 
-The API includes CORS controls, request length limits, rate limiting, optional bearer auth for query endpoints, and admin-key protection for ingestion.
+The backend owns CORS, rate limiting, request validation, JWT verification, ingestion, retrieval, generation, and persistence.
 
-### Ingestion Layer
+### Retrieval And Generation
 
-The ingestion layer handles loading, chunking, embedding, and upserting documents. It keeps document checksum metadata so repeated runs skip unchanged files. This makes the indexing process predictable and safe to rerun.
+The retrieval strategy is intentionally hybrid. Dense search handles semantic similarity, while full-text search handles exact terms such as API names, policy names, product names, and numbers. Reciprocal Rank Fusion combines the rankings, and optional LLM reranking improves final evidence order.
 
-### Retrieval Layer
+Generation is grounded by design. The model is instructed to answer only from supplied chunks and cite chunk IDs. The backend maps those chunk IDs back to stored document metadata, so citations are not invented by the model.
 
-The retrieval layer uses a hybrid strategy:
+### Evaluation
 
-- semantic retrieval for meaning-based matches
-- keyword/full-text retrieval for exact terms
-- reciprocal rank fusion to combine results
-- optional LLM reranking for better candidate ordering
+Offline evaluation uses labelled questions with expected answer snippets and gold source pages. The eval runner measures answer accuracy, document Recall@5, page Recall@5, MRR, abstention accuracy, and latency. Ablations compare dense-only retrieval, hybrid retrieval, and reranked retrieval.
 
-This gives stronger relevance than dense-only or keyword-only retrieval.
-
-All retrieval is scoped to the asking user's `owner_id`, so the dense and keyword queries can only ever return that user's chunks.
-
-#### Multi-query / RAG-Fusion (`ENABLE_MULTI_QUERY`, off by default)
-
-The system can expand a question into several alternative phrasings, retrieve for each, and fuse all rankings with RRF before reranking. This lifts recall when a single phrasing misses relevant chunks. It is deliberately **off by default**: it adds an LLM expansion call plus extra embeddings per question, and that cost only pays off once a user's corpus is large — for the small sample corpus, single-query hybrid retrieval already saturates recall. It is implemented behind a flag and included as a row in the evaluation ablation (`evals/run_eval.py`) so the trade-off can be measured rather than assumed.
-
-### Generation Layer
-
-The generation layer builds a grounded prompt using only retrieved chunks. It instructs the model to answer from context and abstain when context is insufficient. Confidence is a heuristic based on retrieval strength and groundedness, not a calibrated probability. Groundedness is reported as a live evidence signal: the share of answer claims that map back to retrieved chunks.
-
-### Evaluation Layer
-
-The evaluation runner uses labelled questions to measure answer accuracy, citation quality, retrieval ranking, abstention behavior, and latency. It also runs ablations across dense-only, hybrid, and reranked retrieval so improvements are measurable rather than assumed.
-
-Correctness is intentionally an offline/admin eval concept. The sample corpus can report answer accuracy because it has labelled questions, expected answer snippets, and gold source pages. User-uploaded documents do not have automatic ground truth, so the live product shows confidence, groundedness, citations, latency, status, and feedback instead of claiming per-answer correctness. True correctness for user corpora would require owner-scoped labelled eval sets stored and reported through `eval_runs`.
+Live answers do not show "correctness" because arbitrary uploaded documents do not have ground truth. Instead, the product shows evidence-derived metrics: confidence, groundedness, citation count, answer status, latency, and user feedback.
 
 ## Scalability Considerations
 
-The backend is stateless, so multiple Railway instances can serve traffic behind the platform router. Persistent state lives in Postgres. This makes horizontal scaling straightforward for the API tier.
+The current design is intentionally simple but production-shaped:
 
-Supabase Postgres + pgvector is a pragmatic choice for this assignment and for small-to-medium enterprise corpora. It reduces operational complexity because the same database stores application state and vector indexes, while Supabase also provides a dashboard, SQL editor, and a future path to Auth and Storage. The HNSW index supports efficient approximate nearest-neighbor search, and `halfvec(3072)` supports the configured embedding dimensionality.
+- **API scaling:** FastAPI is stateless, so Railway can run multiple replicas.
+- **Data scaling:** Postgres owns durable state; pgvector HNSW supports efficient approximate nearest-neighbor search for small-to-medium corpora.
+- **Security scaling:** Supabase Auth scopes user uploads by owner while keeping the sample corpus globally readable.
+- **Indexing scaling:** Upload indexing currently uses FastAPI background tasks. At higher volume, this should move to a queue and worker.
+- **Retrieval scaling:** If the corpus grows to millions of chunks, a dedicated vector database such as Qdrant, Pinecone, or Weaviate would be the next step.
+- **Evaluation scaling:** User-provided labelled eval sets can be stored per owner and run as scheduled eval jobs.
+- **Operational scaling:** Redis caching, token/cost metrics, latency dashboards, and feedback analytics should be added before heavy production usage.
 
-Scaling paths:
-
-- **Larger document volume:** move ingestion to a background worker and queue.
-- **Higher query traffic:** add Redis caching for repeated questions and embeddings.
-- **Millions of chunks:** move vector search to a dedicated vector database such as Qdrant, Pinecone, or Weaviate.
-- **Enterprise security:** add user login, RBAC, tenant isolation, and audit logs.
-- **Operations:** add metrics for latency, token usage, model cost, retrieval quality, groundedness, correctness evals where labelled data exists, and feedback trends.
-- **Document variety:** add OCR for scanned PDFs and more robust file parsing.
-
-The current design is intentionally modular enough to support these upgrades without changing the public API contract.
+This design avoids unnecessary complexity for the assignment while leaving clear extension points for a real enterprise deployment.

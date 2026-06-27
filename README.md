@@ -1,44 +1,131 @@
 # Enterprise Knowledge Assistant
 
-An enterprise knowledge assistant that answers employee questions from internal documents using Retrieval Augmented Generation (RAG). The project is built as a production-oriented assignment submission: it includes document ingestion, hybrid retrieval, grounded answer generation, source citations, feedback collection, evaluation metrics, and deployment configuration for Vercel + Railway + Supabase.
+A production-shaped Retrieval Augmented Generation (RAG) assistant for answering questions from enterprise documents. The system ingests internal knowledge, indexes it with hybrid semantic + keyword retrieval, generates grounded LLM answers, shows lightweight source citations, collects feedback, supports Supabase authentication, and is deployed with a Vercel frontend, Railway backend, and Supabase Postgres + pgvector database.
+
+This project is built for the AI Engineer assignment requirements: document ingestion, knowledge indexing, retrieval, LLM answer generation, citations, user interface, engineering quality, evaluation, scalability, and deployment.
+
+## What This Demonstrates
+
+| Requirement | Implementation |
+|---|---|
+| Document ingestion and processing | PDF, Markdown, TXT, and DOCX loaders with checksum-based idempotency |
+| Knowledge indexing and retrieval | Supabase Postgres + pgvector, page-aware chunks, full-text search, dense search |
+| LLM-based response generation | Strict grounded prompt with insufficient-context fallback |
+| Source citation | Compact document citations with artifact viewer and highlighted referenced chunk |
+| User interaction interface | React/Vite chat UI, upload flow, metrics, citations, feedback |
+| Engineering best practices | Typed FastAPI API, SQLAlchemy models, Alembic migrations, tests, structured logging |
+| Scalability considerations | Stateless API, indexed vector search, upload background task, clear worker/vector DB upgrade path |
+| Deployment | Vercel frontend, Railway backend, Supabase Postgres + pgvector |
+
+## Bonus Features
+
+Implemented optional features:
+
+- Conversation memory through persisted conversations and follow-up query rewriting.
+- Hybrid search combining keyword/full-text retrieval and semantic vector retrieval.
+- Query rewriting for follow-up questions.
+- LLM reranking of retrieved chunks.
+- Multi-document reasoning through context packing across top evidence chunks.
+- User feedback collection with thumbs up/down persisted in the database.
+- Evaluation metrics and ablation reports in `evals/`.
+- Supabase authentication with per-user document isolation.
+- Live deployment configuration for Vercel, Railway, and Supabase.
+- Optional multi-query / RAG-Fusion behind `ENABLE_MULTI_QUERY`.
 
 ## Architecture Overview
 
-The system has three main runtime parts:
-
-- **Frontend:** React/Vite application deployed on Vercel. It provides the chat interface, Supabase sign-in, document upload, lightweight citation chips, answer quality metrics, and feedback buttons.
-- **Backend:** FastAPI application deployed on Railway. It exposes `/ask`, `/documents`, `/upload`, `/feedback`, `/healthz`, `/readyz`, and admin-protected `/ingest`.
-- **Database and vector store:** Supabase Postgres with pgvector. It stores documents, chunks, embeddings, conversations, messages, feedback, and evaluation runs.
-
 ```mermaid
 flowchart LR
-  User["Employee"] --> UI["React/Vite UI"]
-  UI --> API["FastAPI API"]
+  User["User"] --> UI["React/Vite Frontend - Vercel"]
+  UI --> Auth["Supabase Auth"]
+  UI --> API["FastAPI Backend - Railway"]
   API --> DB["Supabase Postgres + pgvector"]
-  API --> OAI["OpenAI API"]
-  CLI["Ingestion CLI"] --> DB
-  CLI --> OAI
+  API --> OpenAI["OpenAI Models"]
+  CLI["Ingestion CLI"] --> API
+  CLI --> DB
+
+  subgraph DBData["Database"]
+    Docs["documents"]
+    Chunks["chunks + embeddings + tsv"]
+    Msgs["conversations + messages"]
+    Feedback["feedback"]
+    Evals["eval_runs"]
+  end
+
+  DB --> DBData
 ```
 
-Request flow:
+Runtime components:
 
-1. Documents are ingested and split into page-aware chunks.
-2. Chunks are embedded and indexed in Postgres/pgvector.
-3. A user asks a natural-language question.
-4. The backend retrieves relevant chunks using semantic and keyword signals.
-5. The LLM generates an answer only from retrieved context.
-6. The API returns answer, citations, live quality metrics, status, and latency.
+- **Frontend:** React/Vite application for sign-in, document upload, chat, answer metrics, compact citations, artifact viewing, and feedback.
+- **Backend:** FastAPI service for ingestion, retrieval, generation, feedback, health checks, readiness checks, and auth-scoped access control.
+- **Database/vector store:** Supabase Postgres with pgvector. It stores application data and vector indexes in one managed database.
+- **LLM services:** OpenAI chat models for generation, utility tasks, rewriting, reranking, and embeddings.
 
-## Setup Instructions
+## Data Flow
+
+### Ingestion
+
+1. Admin bulk ingestion loads the bundled sample corpus from `data/sample`.
+2. Authenticated users can upload their own PDF, Markdown, TXT, or DOCX files.
+3. Each document is checksummed, so repeated ingestion skips unchanged content.
+4. Text is parsed while preserving page and section metadata.
+5. Content is split into page-aware chunks so citations can point back to a stable page/section.
+6. Chunks are embedded in batches.
+7. Metadata, text, embeddings, and full-text search vectors are stored in Postgres.
+8. pgvector HNSW indexes support fast semantic retrieval.
+
+### Question Answering
+
+1. The user asks a question from the frontend.
+2. The frontend sends the Supabase access token to `POST /ask`.
+3. The backend scopes retrieval to the shared sample corpus plus the current user's uploaded documents.
+4. Follow-up questions can be rewritten into standalone search queries using recent conversation history.
+5. Dense vector retrieval and Postgres full-text retrieval run in parallel.
+6. Reciprocal Rank Fusion combines semantic and keyword results.
+7. The utility model can rerank the strongest candidates.
+8. The generation model receives only retrieved context and must cite chunk IDs.
+9. The API returns the answer, citations, confidence, groundedness, status, and latency.
+10. The user can open a citation artifact or submit thumbs up/down feedback.
+
+## Repository Layout
+
+```text
+backend/              FastAPI app, SQLAlchemy models, Alembic migrations, RAG pipeline
+frontend/             React/Vite user interface
+data/sample/          12 bundled synthetic enterprise documents
+docs/system-design.md 1-2 page system design document
+evals/                Labelled eval dataset, runner, and reports
+.env.example          Local and deployment environment template
+railway.json          Railway backend deployment config
+nixpacks.toml         Railway/Nixpacks Python build config
+```
+
+Bundled sample corpus:
+
+- `Compliance_Vendor_Risk.md`
+- `Customer_FAQ_Billing.md`
+- `Customer_FAQ_Support.md`
+- `Employee_Onboarding_Process.md`
+- `Engineering_Incident_Response.md`
+- `Engineering_Release_Process.md`
+- `HR_Policy_Handbook.md`
+- `IT_Access_Management.md`
+- `Product_Atlas_Admin_Guide.md`
+- `Product_Nova_API_Reference.md`
+- `Sales_Process_Playbook.md`
+- `Security_Data_Classification.md`
+
+## How To Run The Application
 
 ### Prerequisites
 
 - Python 3.11+
 - Node.js 20+
-- OpenAI API key for full model-backed behavior
-- Supabase Postgres with pgvector enabled for production deployment
+- Supabase Postgres with pgvector for production
+- OpenAI API key for model-backed behavior
 
-The app can run locally without `OPENAI_API_KEY`; it uses deterministic fallback embeddings and fallback answer generation so the interface and API remain testable.
+The app can run locally without an OpenAI key by using deterministic fallback embeddings and fallback answer generation. This keeps the UI, API, parsing, retrieval flow, and tests runnable even when model credentials are absent.
 
 ### Backend
 
@@ -54,14 +141,15 @@ python -m app.cli ingest ..\data\sample
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Backend URLs:
+Useful backend URLs:
 
 - API docs: `http://127.0.0.1:8000/docs`
+- Health: `http://127.0.0.1:8000/healthz`
 - Readiness: `http://127.0.0.1:8000/readyz`
 
 ### Frontend
 
-In another terminal:
+In a second terminal:
 
 ```powershell
 cd frontend
@@ -75,23 +163,60 @@ Open:
 http://127.0.0.1:5173
 ```
 
-### Environment Variables
+### Run Tests
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m pytest tests
+.\.venv\Scripts\python.exe -m ruff check .
+
+cd ..\frontend
+npm run build
+```
+
+### Run Evaluations
+
+```powershell
+python evals\run_eval.py
+```
+
+Generated reports:
+
+- `evals/reports/latest.json`
+- `evals/reports/ablation.json`
+- `evals/reports/ablation.md`
+
+## Environment Variables
 
 Backend:
 
 ```env
 DATABASE_URL=
 OPENAI_API_KEY=
-FRONTEND_ORIGIN=
+FRONTEND_ORIGIN=http://localhost:5173
 FRONTEND_ORIGINS=
 FRONTEND_ORIGIN_REGEX=https://enterprise-knowledge-assis[a-z0-9-]*\.vercel\.app
-ADMIN_API_KEY=
+ADMIN_API_KEY=change-me
+
 GEN_MODEL=gpt-5.5
 UTILITY_MODEL=gpt-5.4-mini
 EMBED_MODEL=text-embedding-3-large
 EMBED_DIMS=3072
+
+RATE_LIMIT=20/minute
+MAX_QUESTION_CHARS=1200
 MAX_UPLOAD_MB=10
-# Per-user auth (off by default). When true, all data is scoped to the Supabase user.
+RETRIEVAL_TOP_K=8
+RERANK_TOP_K=6
+RETRIEVAL_THRESHOLD=0.08
+
+ENABLE_QUERY_REWRITE=true
+ENABLE_LLM_RERANK=true
+ENABLE_HYBRID=true
+ENABLE_GROUNDEDNESS_GATE=true
+ENABLE_MULTI_QUERY=false
+MULTI_QUERY_COUNT=3
+
 REQUIRE_AUTH=false
 SUPABASE_URL=
 SUPABASE_JWKS_URL=
@@ -102,135 +227,161 @@ SUPABASE_JWT_AUDIENCE=authenticated
 Frontend:
 
 ```env
-VITE_API_BASE_URL=
-# Optional: set both to require sign-in and give each user a private document space.
+VITE_API_BASE_URL=http://127.0.0.1:8000
 VITE_SUPABASE_URL=
 VITE_SUPABASE_ANON_KEY=
 ```
 
-### Deployment
+## Deployment
 
-Backend deployment target: Railway. Database target: Supabase Postgres + pgvector.
+### Supabase
 
 1. Create a Supabase project.
-2. In Supabase, enable the `vector` extension from **Database -> Extensions**.
-3. Copy the Supabase Postgres connection string. Prefer **Direct connection** for migrations or **Session Pooler** if direct networking is unavailable. Include `sslmode=require`.
-4. Create a Railway project for the FastAPI backend.
-5. Deploy from GitHub using `railway.json`.
-6. Set Railway `DATABASE_URL` to the Supabase connection string.
-7. Set Railway `FRONTEND_ORIGIN` to the production Vercel URL. Keep `FRONTEND_ORIGIN_REGEX=https://enterprise-knowledge-assis[a-z0-9-]*\.vercel\.app` so Vercel preview deployments can call the API during testing.
-8. Apply the schema migrations against the deployed database: `alembic upgrade head` (adds the `owner_id` columns used for per-user isolation).
-9. Run admin ingestion once to seed the shared sample corpus (`owner_id = public-seed`).
+2. Enable the `vector` extension from **Database -> Extensions**.
+3. Copy the Postgres connection string and include `sslmode=require`.
+4. Configure Supabase Auth redirect URLs for local and production frontend URLs.
+5. Keep the database connection string and service credentials out of the repository.
 
-To enable per-user auth (optional): set `REQUIRE_AUTH=true` and `SUPABASE_URL` or `SUPABASE_JWKS_URL` on Railway for modern Supabase ES256 tokens. `SUPABASE_JWT_SECRET` remains supported as a legacy HS256 fallback. Set `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` on Vercel. With auth off, the app runs as a single shared pool exactly as the MVP did.
+### Railway Backend
 
-Frontend deployment target: Vercel.
+1. Create a Railway project from this GitHub repository.
+2. Use the root project with `railway.json`.
+3. Set backend environment variables:
+   - `DATABASE_URL`
+   - `OPENAI_API_KEY`
+   - `ADMIN_API_KEY`
+   - `FRONTEND_ORIGIN`
+   - `FRONTEND_ORIGIN_REGEX`
+   - `REQUIRE_AUTH=true`
+   - `SUPABASE_URL` or `SUPABASE_JWKS_URL`
+4. Railway start command runs migrations and starts Uvicorn:
 
-1. Create a Vercel project with root directory `frontend`.
-2. Set `VITE_API_BASE_URL` to the Railway backend URL.
-3. To require sign-in, set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
-4. Deploy with the default Vite build command.
+```text
+cd backend && python -m alembic upgrade head && python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers
+```
+
+5. Run admin ingestion once to seed the shared sample corpus under `public-seed`.
+
+### Vercel Frontend
+
+1. Create a Vercel project from the repository.
+2. Set root directory to `frontend`.
+3. Set:
+   - `VITE_API_BASE_URL=<Railway backend URL>`
+   - `VITE_SUPABASE_URL=<Supabase project URL>`
+   - `VITE_SUPABASE_ANON_KEY=<Supabase anon key>`
+4. Build command: `npm run build`
+5. Output directory: `dist`
+
+## Public API
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/ask` | Answer a question using retrieved document evidence |
+| `GET` | `/documents` | List shared sample documents plus current user's uploads |
+| `GET` | `/documents/{document_id}/artifact` | Return indexed chunks for the citation artifact viewer |
+| `POST` | `/upload` | Upload a user document for background indexing |
+| `POST` | `/feedback` | Persist thumbs up/down answer feedback |
+| `GET` | `/healthz` | Liveness check |
+| `GET` | `/readyz` | DB/model/readiness check |
+| `POST` | `/ingest` | Admin-protected bulk ingestion |
+| `POST` | `/ask/stream` | Reserved P1 streaming endpoint |
+
+`POST /ask` response shape:
+
+```json
+{
+  "answer": "...",
+  "sources": [
+    {
+      "document_id": "...",
+      "chunk_id": "...",
+      "document": "HR_Policy_Handbook.md",
+      "page": 1,
+      "section_title": "Paid Leave",
+      "snippet": "...",
+      "score": 0.91
+    }
+  ],
+  "confidence": 0.82,
+  "status": "answered",
+  "conversation_id": "...",
+  "message_id": "...",
+  "latency_ms": 1240,
+  "metrics": {
+    "confidence": 0.82,
+    "groundedness": 1.0,
+    "citation_count": 2,
+    "status": "answered",
+    "latency_ms": 1240
+  }
+}
+```
 
 ## Technology Choices
 
-| Area | Choice | Reason |
+| Area | Choice | Why |
 |---|---|---|
-| Backend | FastAPI | Fast, typed, simple API development with strong OpenAPI docs. |
-| Frontend | React + Vite | Polished demo UI with lightweight build and clean Vercel deployment. |
-| Database | Supabase Postgres | Managed Postgres with dashboard, SQL editor, future Auth/Storage path, and pgvector support. |
-| Vector search | Supabase pgvector | Avoids a separate vector database while still supporting semantic search. |
-| Vector index | `halfvec(3072)` + HNSW | Fits 3072-dimension embeddings and supports efficient cosine search in Postgres. |
-| Embeddings | `text-embedding-3-large` | Strong semantic retrieval quality; dimensions are configurable. |
-| LLM | Env-configurable OpenAI model | Keeps model choice swappable without changing code. |
-| Evaluation | Custom in-process eval runner | Measures retrieval, citation, abstention, and answer quality without needing a live server. |
+| Frontend | React + Vite | Fast local development, simple Vercel deployment, flexible custom UI |
+| Backend | FastAPI | Typed request/response models, OpenAPI docs, strong Python ecosystem |
+| Database | Supabase Postgres | Managed Postgres, dashboard, auth integration, SQL editor |
+| Vector search | pgvector | Avoids a separate vector database for this scale |
+| Vector type | `halfvec(3072)` + HNSW | Supports 3072-dimensional embeddings efficiently in pgvector |
+| Embeddings | `text-embedding-3-large` | Strong semantic retrieval quality, configurable dimensions |
+| LLMs | Env-configurable OpenAI models | Easy quality/cost switching without code changes |
+| Auth | Supabase Auth | Hosted email/password auth and JWT verification |
+| Deployment | Vercel + Railway + Supabase | Source-based deployment without Docker overhead |
+| Evaluation | Custom eval runner | Direct measurement of retrieval, abstention, citation, and answer quality |
 
-## Design Decisions
+## Technical Decisions
 
-### RAG Architecture
+### RAG Over Agentic Browsing
 
-The backend uses a deterministic RAG pipeline rather than an open-ended agent:
+The backend uses a controlled RAG pipeline:
 
 ```text
-question -> optional rewrite -> retrieve -> fuse -> rerank -> pack context -> generate answer
+question -> rewrite -> retrieve -> fuse -> rerank -> generate -> cite -> evaluate
 ```
 
-This is easier to test, explain, and control. Agents are flexible, but for an enterprise knowledge assistant the priority is grounded, auditable answers.
+This is more auditable than an open-ended agent. For enterprise knowledge, the key requirement is not tool autonomy; it is grounded, explainable answers from approved documents.
 
-### Document Ingestion
+### Page-Aware Chunking
 
-The ingestion CLI supports PDF, Markdown, text, and DOCX. Each file is checksummed so unchanged documents are skipped on re-ingestion. This prevents duplicate chunks and makes production indexing repeatable.
+Chunks preserve document, page, and section metadata and do not intentionally cross page boundaries. This improves citation quality because a returned source can point to the exact indexed section used in the answer.
 
-### Chunking Approach
+### Hybrid Retrieval
 
-Chunks are page-aware and section-aware. A chunk does not cross a page boundary, which keeps source citations accurate. The chunker uses a target size with overlap so each chunk has enough context without becoming too broad.
+Dense retrieval handles semantic matches. Keyword retrieval handles exact terms like product names, policy labels, acronyms, and numbers. Reciprocal Rank Fusion combines both, and LLM reranking improves the final evidence order.
 
-Why not simple fixed-size chunking:
+### Grounded Generation
 
-- It can split important sections in awkward places.
-- It can make citations less accurate.
-- It can reduce retrieval relevance.
+The model receives only retrieved context and is instructed to cite chunk IDs. If evidence is weak, the backend returns `insufficient_context` instead of making the model guess. The UI shows evidence-derived metrics: confidence, groundedness, citation count, answer status, and latency.
 
-### Retrieval Strategy
+### Lightweight Citations
 
-The system uses hybrid retrieval:
+The answer area stays clean. It shows compact document-name citations instead of long chunks. Clicking a citation opens a right-side indexed-text artifact panel and highlights the referenced chunk.
 
-- Dense semantic retrieval finds meaning-based matches.
-- Keyword/full-text retrieval catches exact policy names, acronyms, product names, and numbers.
-- Reciprocal Rank Fusion combines both rankings.
-- Optional LLM reranking improves final candidate order.
-- Optional multi-query / RAG-Fusion (`ENABLE_MULTI_QUERY`, off by default) expands the question into several phrasings, retrieves for each, and fuses the results — a recall lever for large per-user corpora, included as an ablation row so its cost/benefit is measurable.
+### Authentication And Data Isolation
 
-This gives better relevance than dense-only or keyword-only search.
+With `REQUIRE_AUTH=true`, Supabase JWTs are verified by the backend. Reads include:
 
-### Prompt Design
+- shared sample corpus owned by `public-seed`
+- current user's uploaded documents
 
-The prompt instructs the model to answer only from supplied context and abstain when evidence is insufficient. The API also returns `status: "insufficient_context"` when retrieval confidence is weak.
+Document uploads are scoped to the authenticated user's `sub`. Retrieval filters by the readable owner set, so all users can demo the bundled 12 documents while private uploads remain isolated. Feedback submission also goes through the auth dependency when auth is enabled and is linked to the assistant message it rates.
 
-This prevents unsupported answers and makes failure cases explicit instead of hiding them behind vague responses.
+## Evaluation Approach
 
-### Source Citation
+The eval dataset covers:
 
-Citations come from retrieval metadata, not from the LLM inventing filenames or page numbers. The UI shows compact document-name citations, and clicking a citation opens the indexed-text artifact for that document. Each source still carries stable document/chunk IDs so the artifact can highlight the referenced section.
-
-The live answer metrics are product-safe evidence signals:
-
-- confidence: bounded heuristic, not a calibrated probability
-- groundedness: share of answer claims mapped to retrieved chunks
-- citation count
-- answer status
-- latency
-
-Raw retrieval scores are intentionally not shown in the UI because they are debug values and are easy to misinterpret.
-
-### Conversation Memory
-
-The backend stores conversations and messages. Follow-up questions can be rewritten using recent conversation history, but final answers still depend on retrieved document evidence.
-
-### Authentication & per-user isolation
-
-The app supports per-user data isolation backed by Supabase Auth:
-
-- Admin bulk ingestion requires `x-admin-api-key` and seeds the shared sample corpus.
-- When `REQUIRE_AUTH=true`, `/ask`, `/documents`, `/upload`, and `/feedback` require a valid Supabase JWT. The backend verifies modern Supabase ES256 tokens through `SUPABASE_URL`/`SUPABASE_JWKS_URL`, with `SUPABASE_JWT_SECRET` retained only as the legacy HS256 fallback. Reads include the shared sample corpus (`public-seed`) plus the current user's uploads; writes stay scoped to that user's id (`sub`). Retrieval SQL filters on this readable owner set, so one user's question can use the bundled demo corpus but can never surface another user's private chunks (see `backend/tests/test_isolation.py`).
-- When `REQUIRE_AUTH=false` (default), all data belongs to a single seed user and the app behaves like the original single-pool MVP.
-
-Authenticated users upload their own documents via `POST /upload` (PDF/Markdown/text/DOCX). The document is created immediately as `processing` and embedded in a background task, so large files do not block the request; the UI polls `/documents` until the status flips to `indexed`.
-
-Role-based access control (RBAC) and org-level (vs. per-user) tenancy are left as future work.
-
-## Evaluation
-
-The evaluation runner is `evals/run_eval.py`.
-
-It uses a labelled dataset covering:
-
-- direct factual questions
+- direct fact questions
 - keyword-heavy questions
 - ambiguous questions
-- multi-document questions
 - unanswerable questions
+- follow-up questions
+- multi-document reasoning questions
 
-Metrics:
+Metrics reported:
 
 - answer accuracy
 - document Recall@5
@@ -239,21 +390,7 @@ Metrics:
 - abstention accuracy
 - latency
 
-These are offline correctness evals for the labelled sample corpus. They are valid because `evals/dataset.jsonl` contains expected answer snippets and gold source documents/pages. For arbitrary user-uploaded documents, the app cannot honestly compute true correctness without labelled questions and expected answers. In the live chat UI, uploaded documents use confidence, groundedness, citations, status, latency, and user feedback as quality signals.
-
-Future user-document correctness evals would require an owner-scoped labelled eval set, for example:
-
-```json
-{
-  "question": "What is the PTO policy?",
-  "expected_answer_contains": ["24 paid leaves"],
-  "gold_sources": [{ "document": "HR.md", "page": 1 }]
-}
-```
-
-Those eval runs should be stored in `eval_runs` and reported in an admin/evaluation view, not as per-answer live correctness.
-
-Ablation results from the current sample corpus:
+Current ablation results from the sample corpus:
 
 | Config | Answer acc | Doc Recall@5 | Page Recall@5 | MRR | Abstention | Latency (ms) |
 |---|---:|---:|---:|---:|---:|---:|
@@ -261,56 +398,50 @@ Ablation results from the current sample corpus:
 | +hybrid_rrf | 0.92 | 1.00 | 1.00 | 0.98 | 1.00 | 2605 |
 | +rerank | 0.89 | 1.00 | 1.00 | 1.00 | 1.00 | 3096 |
 
-What improved:
+Correctness is reported only in offline evals where labelled expected answers and gold sources exist. For arbitrary user uploads, the live UI does not claim correctness because there is no ground truth. Instead it reports confidence, groundedness, citations, latency, status, and feedback.
 
-- Hybrid retrieval gave the largest answer-quality lift.
-- Reranking improved ordering quality, shown by MRR reaching 1.00.
-- Page-aware chunking kept page citation accuracy at 1.00.
-- Abstention worked correctly on out-of-scope questions.
+## Known Limitations
 
-Run evaluation:
-
-```powershell
-python evals\run_eval.py
-```
-
-Outputs:
-
-- `evals/reports/ablation.json`
-- `evals/reports/latest.json`
-- `evals/reports/ablation.md`
-
-## Limitations
-
-- OCR is not implemented; scanned PDFs require future OCR support.
-- The sample corpus is synthetic and smaller than a real enterprise corpus.
-- Per-user isolation is implemented via Supabase Auth, but RBAC and org-level (multi-tenant) authorization are not.
-- Background upload indexing uses FastAPI background tasks (in-process); a high-volume deployment would need a dedicated queue/worker.
-- Conversations and messages are not yet owner-scoped (documents and chunks are).
-- Streaming responses are not implemented in the MVP.
-- Redis caching is not implemented.
-- Evaluation uses a labelled sample set; user-uploaded documents need their own labelled eval sets before true correctness can be reported.
+- OCR is not implemented; scanned PDFs need future OCR support.
+- The bundled corpus is synthetic and smaller than a real enterprise corpus.
+- Upload indexing currently uses FastAPI background tasks; high-volume production should use a queue and worker.
+- Feedback is collected, but there is no admin analytics dashboard or owner-scoped feedback reporting yet.
+- User-uploaded document correctness cannot be measured automatically without labelled eval questions.
+- Streaming responses are reserved for P1 through `/ask/stream`.
+- RBAC, organization-level tenancy, audit logs, and admin roles are future work.
+- Redis caching and cost/token observability are not yet implemented.
 
 ## Future Improvements
 
 - Add OCR for scanned PDFs.
-- Move upload indexing to a dedicated queue/worker for large corpora.
-- Add RBAC, org-level tenancy, and audit trails on top of the per-user auth.
-- Scope conversations and messages to the owner.
-- Enable multi-query / RAG-Fusion (already implemented behind `ENABLE_MULTI_QUERY`) once per-user corpora grow large enough to benefit.
+- Move ingestion to a dedicated queue/worker for large uploads.
+- Add organization/team workspaces with RBAC and audit logs.
+- Add owner-scoped labelled eval-set upload and scheduled evaluation runs.
+- Add feedback analytics and route low-rated answers into an improvement workflow.
 - Add streaming responses through `/ask/stream`.
-- Add Redis caching for repeated questions and embeddings.
-- Add observability dashboards for latency, cost, token usage, and answer quality.
-- Move to a dedicated vector database such as Qdrant, Pinecone, or Weaviate if the corpus grows to millions of chunks.
-- Add owner-scoped labelled eval sets, scheduled evaluation runs, and feedback-driven improvement loops.
+- Add Redis caching for repeated queries and expensive intermediate results.
+- Add dashboards for latency, token usage, cost, retrieval quality, groundedness, and feedback trends.
+- Move vector search to Qdrant, Pinecone, or Weaviate if the corpus reaches millions of chunks.
 
 ## Demo Script
 
-1. Show indexed documents in the left panel.
-2. Ask: "What is the employee paid leave policy?"
-3. Expand the HR source citation.
-4. Ask: "What should API clients do for 429 responses?"
-5. Ask an unsupported question like "What is the lunch menu tomorrow?"
-6. Show the `insufficient_context` response.
-7. Submit feedback.
-8. Explain the flow: ingestion, chunking, hybrid retrieval, reranking, grounded generation, citations, and evaluation.
+Suggested 5-minute walkthrough:
+
+1. Sign in with Supabase Auth.
+2. Show the 12 shared indexed documents.
+3. Ask: `What is the employee paid leave policy?`
+4. Click the HR citation and show the artifact highlight.
+5. Ask: `What should API clients do for 429 responses?`
+6. Upload a small user document and show that it becomes indexed.
+7. Ask a question from the uploaded document.
+8. Ask an unsupported question and show the `Needs more context` answer.
+9. Submit thumbs up/down feedback.
+10. Explain the pipeline: ingestion, chunking, hybrid retrieval, reranking, grounded generation, citations, evals, and deployment.
+
+## System Design Document
+
+The 1-2 page system design document is available at:
+
+```text
+docs/system-design.md
+```
