@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # /ingest demand a valid Supabase JWT and scope all data to that user. When False, the
     # app behaves as the single-pool MVP did, owned by the seed user.
     require_auth: bool = False
+    # Modern Supabase projects sign tokens with asymmetric keys (ES256) served from a
+    # JWKS endpoint; legacy projects use a shared HS256 secret. Set either SUPABASE_URL
+    # (jwks url is derived) / SUPABASE_JWKS_URL, or SUPABASE_JWT_SECRET for HS256.
+    supabase_url: str | None = None
+    supabase_jwks_url: str | None = None
     supabase_jwt_secret: str | None = None
     supabase_jwt_audience: str = "authenticated"
     data_dir: Path = Field(default=Path("data/sample"))
