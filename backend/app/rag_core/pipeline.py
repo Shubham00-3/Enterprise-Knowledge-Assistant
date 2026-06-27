@@ -23,6 +23,7 @@ def answer_question(
     settings: Settings,
     embeddings: EmbeddingProvider,
     llm: LLMProvider,
+    owner_id: str,
 ) -> AskResponse:
     started = time.perf_counter()
     conversation = _get_or_create_conversation(session, conversation_id)
@@ -36,7 +37,10 @@ def answer_question(
         top_k=settings.retrieval_top_k,
         rerank_top_k=settings.rerank_top_k,
         use_rerank=settings.enable_llm_rerank,
+        owner_id=owner_id,
         use_hybrid=settings.enable_hybrid,
+        use_multi_query=settings.enable_multi_query,
+        multi_query_count=settings.multi_query_count,
     )
     result = generate_answer(question, chunks, llm, settings)
     sources = [

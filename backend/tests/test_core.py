@@ -138,22 +138,64 @@ def test_confidence_does_not_saturate() -> None:
     assert 0.0 < confidence_score(0.3, 1.0) < 1.0
 
 
-def test_bearer_auth_gate() -> None:
+def test_auth_disabled_returns_seed_owner() -> None:
     from types import SimpleNamespace
 
+    from app.auth import SEED_OWNER_ID, resolve_owner_id
+
+    settings = SimpleNamespace(require_auth=False, supabase_jwt_secret=None, supabase_jwt_audience="authenticated")
+    # No header needed when auth is off; everything maps to the shared seed owner.
+    assert resolve_owner_id(None, settings) == SEED_OWNER_ID
+    assert resolve_owner_id("Bearer anything", settings) == SEED_OWNER_ID
+
+
+def test_auth_enabled_extracts_subject_from_valid_jwt() -> None:
+    from types import SimpleNamespace
+
+    import jwt
+
+    from app.auth import resolve_owner_id
+
+    settings = SimpleNamespace(
+        require_auth=True, supabase_jwt_secret="topsecret", supabase_jwt_audience="authenticated"
+    )
+    token = jwt.encode({"sub": "user-abc", "aud": "authenticated"}, "topsecret", algorithm="HS256")
+    assert resolve_owner_id(f"Bearer {token}", settings) == "user-abc"
+
+
+def test_auth_enabled_rejects_bad_tokens() -> None:
+    from types import SimpleNamespace
+
+    import jwt
     from fastapi import HTTPException
 
-    from app.main import verify_bearer
+    from app.auth import resolve_owner_id
 
-    # Disabled -> no-op regardless of header.
-    verify_bearer(None, SimpleNamespace(require_auth=False, api_auth_token=None))
-
-    enabled = SimpleNamespace(require_auth=True, api_auth_token="secret")
-    verify_bearer("Bearer secret", enabled)  # valid token passes
-    for bad in (None, "secret", "Bearer wrong"):
+    settings = SimpleNamespace(
+        require_auth=True, supabase_jwt_secret="topsecret", supabase_jwt_audience="authenticated"
+    )
+    wrong_secret = jwt.encode({"sub": "x", "aud": "authenticated"}, "nope", algorithm="HS256")
+    wrong_aud = jwt.encode({"sub": "x", "aud": "other"}, "topsecret", algorithm="HS256")
+    for bad in (None, "topsecret", "Bearer not-a-jwt", f"Bearer {wrong_secret}", f"Bearer {wrong_aud}"):
         try:
-            verify_bearer(bad, enabled)
+            resolve_owner_id(bad, settings)
         except HTTPException as exc:
             assert exc.status_code == 401
         else:
             raise AssertionError(f"expected 401 for {bad!r}")
+
+
+def test_auth_enabled_without_secret_is_misconfig() -> None:
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from app.auth import resolve_owner_id
+
+    settings = SimpleNamespace(require_auth=True, supabase_jwt_secret=None, supabase_jwt_audience="authenticated")
+    try:
+        resolve_owner_id("Bearer whatever", settings)
+    except HTTPException as exc:
+        assert exc.status_code == 500
+    else:
+        raise AssertionError("expected 500 when secret is unset")

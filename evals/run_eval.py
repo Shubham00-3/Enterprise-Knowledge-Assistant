@@ -26,7 +26,7 @@ os.environ.setdefault(
 
 from sqlalchemy import func, select  # noqa: E402
 
-from app.config import get_settings  # noqa: E402
+from app.config import SEED_OWNER_ID, get_settings  # noqa: E402
 from app.db import SessionLocal, init_local_db  # noqa: E402
 from app.models import Chunk  # noqa: E402
 from app.rag_core.generation.service import generate_answer  # noqa: E402
@@ -42,6 +42,7 @@ CONFIGS = {
     "dense_only": {"use_hybrid": False, "use_rerank": False},
     "+hybrid_rrf": {"use_hybrid": True, "use_rerank": False},
     "+rerank": {"use_hybrid": True, "use_rerank": True},
+    "+multi_query": {"use_hybrid": True, "use_rerank": True, "use_multi_query": True},
 }
 
 
@@ -81,7 +82,10 @@ def evaluate(cases: list[dict], settings, embeddings, llm, cfg: dict) -> dict:
                 top_k=settings.retrieval_top_k,
                 rerank_top_k=settings.rerank_top_k,
                 use_rerank=cfg["use_rerank"],
+                owner_id=SEED_OWNER_ID,
                 use_hybrid=cfg["use_hybrid"],
+                use_multi_query=cfg.get("use_multi_query", False),
+                multi_query_count=settings.multi_query_count,
             )
             generated = generate_answer(case["question"], chunks, llm, settings)
             answer, status = generated.answer, generated.status

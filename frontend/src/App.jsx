@@ -3,17 +3,17 @@ import {
   ArrowUp,
   FileText,
   Loader2,
+  LogOut,
   Sparkles,
   ThumbsDown,
   ThumbsUp,
+  Upload,
 } from "lucide-react";
 
+import { Login } from "./Login";
+import { authEnabled, supabase } from "./supabaseClient";
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
-const AUTH_TOKEN = import.meta.env.VITE_API_AUTH_TOKEN || "";
-const jsonHeaders = {
-  "Content-Type": "application/json",
-  ...(AUTH_TOKEN ? { Authorization: `Bearer ${AUTH_TOKEN}` } : {})
-};
 
 const EXAMPLES = [
   "What is the employee paid leave policy?",
@@ -22,21 +22,54 @@ const EXAMPLES = [
   "When are terminated employee accounts disabled?",
 ];
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export function App() {
+  const [session, setSession] = useState(null);
+  const [authReady, setAuthReady] = useState(!authEnabled);
   const [documents, setDocuments] = useState([]);
   const [entries, setEntries] = useState([]);
   const [question, setQuestion] = useState("");
   const [conversationId, setConversationId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [upload, setUpload] = useState(null); // { name, status }
   const threadEndRef = useRef(null);
+  const fileRef = useRef(null);
 
+  const token = session?.access_token ?? null;
+
+  // Track the Supabase session when auth is enabled.
   useEffect(() => {
-    fetch(`${API_BASE}/documents`)
-      .then((res) => (res.ok ? res.json() : []))
-      .then(setDocuments)
-      .catch(() => setDocuments([]));
+    if (!authEnabled) return;
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthReady(true);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, next) => setSession(next));
+    return () => sub.subscription.unsubscribe();
   }, []);
+
+  function authHeaders(json = true) {
+    const headers = {};
+    if (json) headers["Content-Type"] = "application/json";
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    return headers;
+  }
+
+  async function fetchDocuments() {
+    const res = await fetch(`${API_BASE}/documents`, { headers: authHeaders(false) });
+    return res.ok ? res.json() : [];
+  }
+
+  // Load the signed-in user's documents (or the seed pool when auth is off).
+  useEffect(() => {
+    if (authEnabled && !session) {
+      setDocuments([]);
+      return;
+    }
+    fetchDocuments().then(setDocuments).catch(() => setDocuments([]));
+  }, [session]);
 
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -57,7 +90,7 @@ export function App() {
     try {
       const response = await fetch(`${API_BASE}/ask`, {
         method: "POST",
-        headers: jsonHeaders,
+        headers: authHeaders(),
         body: JSON.stringify({ question: text, conversation_id: conversationId }),
       });
       if (!response.ok) {
@@ -77,17 +110,66 @@ export function App() {
     }
   }
 
-  async function sendFeedback(index, messageId, rating) {
-    await fetch(`${API_BASE}/feedback`, {
-      method: "POST",
-      headers: jsonHeaders,
-      body: JSON.stringify({ message_id: messageId, rating }),
-    }).catch(() => null);
-    setEntries((items) =>
-      items.map((item, i) =>
-        i === index ? { ...item, answer: { ...item.answer, feedback: rating } } : item
-      )
+  async function onUploadFile(event) {
+    const file = event.target.files?.[0];
+    event.target.value = ""; // allow re-uploading the same file name later
+    if (!file) return;
+    setError("");
+    setUpload({ name: file.name, status: "uploading" });
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`${API_BASE}/upload`, {
+        method: "POST",
+        headers: authHeaders(false), // no Content-Type: browser sets the multipart boundary
+        body: form,
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}));
+        throw new Error(detail.detail || "Upload failed.");
+      }
+      const data = await res.json();
+      setUpload({ name: file.name, status: "processing" });
+      await pollUntilIndexed(data.document_id, file.name);
+    } catch (err) {
+      setUpload({ name: file.name, status: "failed", error: err.message });
+    }
+  }
+
+  async function pollUntilIndexed(documentId, name) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await sleep(2500);
+      const docs = await fetchDocuments();
+      const doc = docs.find((d) => d.id === documentId);
+      if (doc && doc.status === "indexed") {
+        setDocuments(docs);
+        setUpload({ name, status: "indexed" });
+        return;
+      }
+      if (doc && doc.status === "failed") {
+        setUpload({ name, status: "failed", error: "Indexing failed on the server." });
+        return;
+      }
+    }
+    setUpload({ name, status: "processing", error: "Still indexing — check back shortly." });
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    setEntries([]);
+    setConversationId(null);
+    setDocuments([]);
+  }
+
+  if (authEnabled && !authReady) {
+    return (
+      <div className="auth-screen">
+        <Loader2 className="spin" size={22} />
+      </div>
     );
+  }
+  if (authEnabled && !session) {
+    return <Login />;
   }
 
   const hasThread = entries.length > 0;
@@ -99,15 +181,37 @@ export function App() {
           <Sparkles size={18} />
           <span>Knowledge Assistant</span>
         </div>
-        {indexedCount > 0 && <span className="indexed-pill">{indexedCount} documents indexed</span>}
+        <div className="topbar-actions">
+          {indexedCount > 0 && <span className="indexed-pill">{indexedCount} documents indexed</span>}
+          <button className="icon-btn" onClick={() => fileRef.current?.click()}>
+            <Upload size={15} /> Upload
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".pdf,.md,.txt,.docx"
+            onChange={onUploadFile}
+            hidden
+          />
+          {authEnabled && session && (
+            <>
+              <span className="user-chip" title={session.user?.email}>
+                {session.user?.email}
+              </span>
+              <button className="icon-btn" onClick={signOut} aria-label="Sign out">
+                <LogOut size={15} />
+              </button>
+            </>
+          )}
+        </div>
       </header>
+
+      {upload && <UploadBanner upload={upload} onDismiss={() => setUpload(null)} />}
 
       {!hasThread ? (
         <main className="hero">
           <h1>Ask your company&apos;s knowledge base</h1>
-          <p className="hero-sub">
-            Grounded answers with citations from your internal documents.
-          </p>
+          <p className="hero-sub">Grounded answers with citations from your internal documents.</p>
           <Composer
             value={question}
             onChange={setQuestion}
@@ -150,6 +254,43 @@ export function App() {
             placeholder="Ask a follow-up..."
           />
         </div>
+      )}
+    </div>
+  );
+
+  async function sendFeedback(index, messageId, rating) {
+    await fetch(`${API_BASE}/feedback`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ message_id: messageId, rating }),
+    }).catch(() => null);
+    setEntries((items) =>
+      items.map((item, i) =>
+        i === index ? { ...item, answer: { ...item.answer, feedback: rating } } : item
+      )
+    );
+  }
+}
+
+function UploadBanner({ upload, onDismiss }) {
+  const labels = {
+    uploading: "Uploading",
+    processing: "Indexing",
+    indexed: "Indexed",
+    failed: "Upload failed",
+  };
+  const busy = upload.status === "uploading" || upload.status === "processing";
+  return (
+    <div className={`upload-banner ${upload.status}`}>
+      {busy ? <Loader2 className="spin" size={14} /> : <FileText size={14} />}
+      <span>
+        <strong>{labels[upload.status]}:</strong> {upload.name}
+        {upload.error ? ` — ${upload.error}` : ""}
+      </span>
+      {!busy && (
+        <button className="banner-dismiss" onClick={onDismiss} aria-label="Dismiss">
+          ✕
+        </button>
       )}
     </div>
   );

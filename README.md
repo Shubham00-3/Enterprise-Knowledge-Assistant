@@ -6,8 +6,8 @@ An enterprise knowledge assistant that answers employee questions from internal 
 
 The system has three main runtime parts:
 
-- **Frontend:** React/Vite application deployed on Vercel. It provides the chat interface, document status panel, citation cards, confidence/status indicators, and feedback buttons.
-- **Backend:** FastAPI application deployed on Railway. It exposes `/ask`, `/documents`, `/feedback`, `/healthz`, `/readyz`, and admin-protected `/ingest`.
+- **Frontend:** React/Vite application deployed on Vercel. It provides the chat interface, Supabase sign-in, document upload, citation cards, confidence/status indicators, and feedback buttons.
+- **Backend:** FastAPI application deployed on Railway. It exposes `/ask`, `/documents`, `/upload`, `/feedback`, `/healthz`, `/readyz`, and admin-protected `/ingest`.
 - **Database and vector store:** Supabase Postgres with pgvector. It stores documents, chunks, embeddings, conversations, messages, feedback, and evaluation runs.
 
 ```mermaid
@@ -88,15 +88,20 @@ GEN_MODEL=gpt-5.5
 UTILITY_MODEL=gpt-5.4-mini
 EMBED_MODEL=text-embedding-3-large
 EMBED_DIMS=3072
+MAX_UPLOAD_MB=10
+# Per-user auth (off by default). When true, all data is scoped to the Supabase user.
 REQUIRE_AUTH=false
-API_AUTH_TOKEN=
+SUPABASE_JWT_SECRET=
+SUPABASE_JWT_AUDIENCE=authenticated
 ```
 
 Frontend:
 
 ```env
 VITE_API_BASE_URL=
-VITE_API_AUTH_TOKEN=
+# Optional: set both to require sign-in and give each user a private document space.
+VITE_SUPABASE_URL=
+VITE_SUPABASE_ANON_KEY=
 ```
 
 ### Deployment
@@ -109,13 +114,16 @@ Backend deployment target: Railway. Database target: Supabase Postgres + pgvecto
 4. Create a Railway project for the FastAPI backend.
 5. Deploy from GitHub using `railway.json`.
 6. Set Railway `DATABASE_URL` to the Supabase connection string.
-7. Run ingestion once against the deployed database.
+7. Apply the schema migrations against the deployed database: `alembic upgrade head` (adds the `owner_id` columns used for per-user isolation).
+8. Run admin ingestion once to seed the shared sample corpus (`owner_id = public-seed`).
+
+To enable per-user auth (optional): set `REQUIRE_AUTH=true` and `SUPABASE_JWT_SECRET` (Supabase → Project Settings → API → JWT Settings) on Railway, and `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` on Vercel. With auth off, the app runs as a single shared pool exactly as the MVP did.
 
 Frontend deployment target: Vercel.
 
 1. Create a Vercel project with root directory `frontend`.
 2. Set `VITE_API_BASE_URL` to the Railway backend URL.
-3. If auth is enabled, set `VITE_API_AUTH_TOKEN`.
+3. To require sign-in, set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
 4. Deploy with the default Vite build command.
 
 ## Technology Choices
@@ -165,6 +173,7 @@ The system uses hybrid retrieval:
 - Keyword/full-text retrieval catches exact policy names, acronyms, product names, and numbers.
 - Reciprocal Rank Fusion combines both rankings.
 - Optional LLM reranking improves final candidate order.
+- Optional multi-query / RAG-Fusion (`ENABLE_MULTI_QUERY`, off by default) expands the question into several phrasings, retrieves for each, and fuses the results — a recall lever for large per-user corpora, included as an ablation row so its cost/benefit is measurable.
 
 This gives better relevance than dense-only or keyword-only search.
 
@@ -187,14 +196,17 @@ Citations come from retrieval metadata, not from the LLM inventing filenames or 
 
 The backend stores conversations and messages. Follow-up questions can be rewritten using recent conversation history, but final answers still depend on retrieved document evidence.
 
-### Authentication
+### Authentication & per-user isolation
 
-Two levels are implemented:
+The app supports per-user data isolation backed by Supabase Auth:
 
-- Admin ingestion requires `x-admin-api-key`.
-- Optional bearer auth can protect `/ask` and `/feedback` with `REQUIRE_AUTH=true` and `API_AUTH_TOKEN`.
+- Admin bulk ingestion requires `x-admin-api-key` and seeds the shared sample corpus.
+- When `REQUIRE_AUTH=true`, `/ask`, `/documents`, `/upload`, and `/feedback` require a valid Supabase JWT. The backend verifies the token (`SUPABASE_JWT_SECRET`) and scopes every document, chunk, query, and upload to that user's id (`sub`). Retrieval SQL filters on `owner_id`, so one user's question can never surface another user's chunks (see `backend/tests/test_isolation.py`).
+- When `REQUIRE_AUTH=false` (default), all data belongs to a single seed user and the app behaves like the original single-pool MVP.
 
-Full multi-user login and RBAC are left as future work.
+Authenticated users upload their own documents via `POST /upload` (PDF/Markdown/text/DOCX). The document is created immediately as `processing` and embedded in a background task, so large files do not block the request; the UI polls `/documents` until the status flips to `indexed`.
+
+Role-based access control (RBAC) and org-level (vs. per-user) tenancy are left as future work.
 
 ## Evaluation
 
@@ -248,20 +260,22 @@ Outputs:
 
 - OCR is not implemented; scanned PDFs require future OCR support.
 - The sample corpus is synthetic and smaller than a real enterprise corpus.
-- Full user authentication, RBAC, and multi-tenant authorization are not implemented.
+- Per-user isolation is implemented via Supabase Auth, but RBAC and org-level (multi-tenant) authorization are not.
+- Background upload indexing uses FastAPI background tasks (in-process); a high-volume deployment would need a dedicated queue/worker.
+- Conversations and messages are not yet owner-scoped (documents and chunks are).
 - Streaming responses are not implemented in the MVP.
-- Async/background ingestion is not implemented.
 - Redis caching is not implemented.
 - Evaluation uses a labelled sample set; a production system would need ongoing evals and human review.
 
 ## Future Improvements
 
 - Add OCR for scanned PDFs.
-- Add background ingestion with a queue for large corpora.
-- Add user login, RBAC, and audit trails.
+- Move upload indexing to a dedicated queue/worker for large corpora.
+- Add RBAC, org-level tenancy, and audit trails on top of the per-user auth.
+- Scope conversations and messages to the owner.
+- Enable multi-query / RAG-Fusion (already implemented behind `ENABLE_MULTI_QUERY`) once per-user corpora grow large enough to benefit.
 - Add streaming responses through `/ask/stream`.
 - Add Redis caching for repeated questions and embeddings.
-- Add admin upload UI for documents.
 - Add observability dashboards for latency, cost, token usage, and answer quality.
 - Move to a dedicated vector database such as Qdrant, Pinecone, or Weaviate if the corpus grows to millions of chunks.
 - Add scheduled evaluation runs and feedback-driven improvement loops.

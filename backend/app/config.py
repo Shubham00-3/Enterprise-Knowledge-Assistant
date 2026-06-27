@@ -4,6 +4,9 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Owner of the bundled sample corpus and of all data created while auth is disabled.
+SEED_OWNER_ID = "public-seed"
+
 
 def _default_database_url() -> str:
     """Anchor the local SQLite DB to <repo>/backend/.local so the path is the
@@ -24,6 +27,7 @@ class Settings(BaseSettings):
     embed_dims: int = 3072
     rate_limit: str = "20/minute"
     max_question_chars: int = 1200
+    max_upload_mb: int = 10
     retrieval_top_k: int = 8
     rerank_top_k: int = 6
     retrieval_threshold: float = 0.08
@@ -32,8 +36,16 @@ class Settings(BaseSettings):
     enable_llm_rerank: bool = True
     enable_hybrid: bool = True
     enable_groundedness_gate: bool = True
+    # Multi-query / RAG-Fusion. Off by default: it adds an LLM call + extra embeddings per
+    # question, which only pays off once a user's corpus is large. See docs/system-design.md.
+    enable_multi_query: bool = False
+    multi_query_count: int = 3
+    # Per-user auth (Phase 1). When require_auth is True, /ask, /documents, /feedback and
+    # /ingest demand a valid Supabase JWT and scope all data to that user. When False, the
+    # app behaves as the single-pool MVP did, owned by the seed user.
     require_auth: bool = False
-    api_auth_token: str | None = None
+    supabase_jwt_secret: str | None = None
+    supabase_jwt_audience: str = "authenticated"
     data_dir: Path = Field(default=Path("data/sample"))
 
     model_config = SettingsConfigDict(

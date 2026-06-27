@@ -93,6 +93,12 @@ The retrieval layer uses a hybrid strategy:
 
 This gives stronger relevance than dense-only or keyword-only retrieval.
 
+All retrieval is scoped to the asking user's `owner_id`, so the dense and keyword queries can only ever return that user's chunks.
+
+#### Multi-query / RAG-Fusion (`ENABLE_MULTI_QUERY`, off by default)
+
+The system can expand a question into several alternative phrasings, retrieve for each, and fuse all rankings with RRF before reranking. This lifts recall when a single phrasing misses relevant chunks. It is deliberately **off by default**: it adds an LLM expansion call plus extra embeddings per question, and that cost only pays off once a user's corpus is large — for the small sample corpus, single-query hybrid retrieval already saturates recall. It is implemented behind a flag and included as a row in the evaluation ablation (`evals/run_eval.py`) so the trade-off can be measured rather than assumed.
+
 ### Generation Layer
 
 The generation layer builds a grounded prompt using only retrieved chunks. It instructs the model to answer from context and abstain when context is insufficient. Confidence is a heuristic based on retrieval strength and groundedness, not a calibrated probability.

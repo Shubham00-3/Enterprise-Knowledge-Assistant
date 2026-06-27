@@ -33,6 +33,12 @@ class DocumentStatus(BaseModel):
     status: str
 
 
+class UploadResponse(BaseModel):
+    document_id: str
+    filename: str
+    status: str
+
+
 class FeedbackRequest(BaseModel):
     message_id: str
     rating: Literal["up", "down"]

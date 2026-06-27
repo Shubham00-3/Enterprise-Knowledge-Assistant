@@ -1,9 +1,10 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.config import SEED_OWNER_ID
 from app.db import Base
 
 
@@ -13,12 +14,18 @@ def uuid_str() -> str:
 
 class Document(Base):
     __tablename__ = "documents"
+    # Dedup is per owner: two different users may upload the same file.
+    __table_args__ = (UniqueConstraint("owner_id", "checksum", name="uq_owner_checksum"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    # Supabase user id that owns this document; SEED_OWNER_ID for sample/no-auth data.
+    owner_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=SEED_OWNER_ID, server_default=SEED_OWNER_ID, index=True
+    )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     doc_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    checksum: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     num_pages: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(50), default="indexed")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -30,10 +37,18 @@ class Document(Base):
 
 class Chunk(Base):
     __tablename__ = "chunks"
-    __table_args__ = (UniqueConstraint("document_id", "chunk_index", name="uq_document_chunk"),)
+    __table_args__ = (
+        UniqueConstraint("document_id", "chunk_index", name="uq_document_chunk"),
+        # Denormalized owner_id lets retrieval filter by owner in the index scan.
+        Index("ix_chunks_owner_id", "owner_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"))
+    # Denormalized from the parent document so per-user filtering needs no join.
+    owner_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=SEED_OWNER_ID, server_default=SEED_OWNER_ID
+    )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     page_start: Mapped[int] = mapped_column(Integer, default=1)

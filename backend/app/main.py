@@ -1,10 +1,13 @@
+import hashlib
 import logging
+import os
+import tempfile
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
 import structlog
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -13,13 +16,22 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
+from app.auth import SEED_OWNER_ID, current_owner_id
 from app.config import Settings, get_settings
-from app.db import get_session, init_local_db, readiness_check
+from app.db import SessionLocal, get_session, init_local_db, readiness_check
 from app.models import Chunk, Document, Feedback, Message
-from app.rag_core.ingestion.service import ingest_path
+from app.rag_core.ingestion.loaders import SUPPORTED_EXTENSIONS
+from app.rag_core.ingestion.service import index_document_file, ingest_path
 from app.rag_core.pipeline import answer_question
 from app.rag_core.providers import OpenAIEmbeddingProvider, OpenAILLMProvider
-from app.schemas import AskRequest, AskResponse, DocumentStatus, FeedbackRequest, FeedbackResponse
+from app.schemas import (
+    AskRequest,
+    AskResponse,
+    DocumentStatus,
+    FeedbackRequest,
+    FeedbackResponse,
+    UploadResponse,
+)
 
 settings = get_settings()
 # Only /ask is rate limited (see decorator below); health checks, /documents and
@@ -80,23 +92,6 @@ def startup() -> None:
         init_local_db()
 
 
-def verify_bearer(authorization: str | None, app_settings: Settings) -> None:
-    """Optional bearer-token gate. No-op unless REQUIRE_AUTH is enabled."""
-    if not app_settings.require_auth:
-        return
-    if not app_settings.api_auth_token:
-        raise HTTPException(status_code=500, detail="REQUIRE_AUTH is on but API_AUTH_TOKEN is unset")
-    if authorization != f"Bearer {app_settings.api_auth_token}":
-        raise HTTPException(status_code=401, detail="Missing or invalid bearer token")
-
-
-def require_api_auth(
-    authorization: str | None = Header(default=None),
-    app_settings: Settings = Depends(get_settings),
-) -> None:
-    verify_bearer(authorization, app_settings)
-
-
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
@@ -120,8 +115,13 @@ def readyz(session: Session = Depends(get_session)) -> dict[str, object]:
 
 
 @app.get("/documents", response_model=list[DocumentStatus])
-def documents(session: Session = Depends(get_session)) -> list[DocumentStatus]:
-    rows = session.scalars(select(Document).order_by(Document.created_at.desc())).all()
+def documents(
+    session: Session = Depends(get_session),
+    owner_id: str = Depends(current_owner_id),
+) -> list[DocumentStatus]:
+    rows = session.scalars(
+        select(Document).where(Document.owner_id == owner_id).order_by(Document.created_at.desc())
+    ).all()
     return [
         DocumentStatus(
             id=row.id,
@@ -134,13 +134,14 @@ def documents(session: Session = Depends(get_session)) -> list[DocumentStatus]:
     ]
 
 
-@app.post("/ask", response_model=AskResponse, dependencies=[Depends(require_api_auth)])
+@app.post("/ask", response_model=AskResponse)
 @limiter.limit(settings.rate_limit)
 def ask(
     request: Request,
     payload: AskRequest,
     session: Session = Depends(get_session),
     app_settings: Settings = Depends(get_settings),
+    owner_id: str = Depends(current_owner_id),
 ) -> AskResponse:
     if len(payload.question) > app_settings.max_question_chars:
         raise HTTPException(status_code=422, detail="Question is too long")
@@ -151,10 +152,11 @@ def ask(
         settings=app_settings,
         embeddings=OpenAIEmbeddingProvider(app_settings),
         llm=OpenAILLMProvider(app_settings),
+        owner_id=owner_id,
     )
 
 
-@app.post("/feedback", response_model=FeedbackResponse, dependencies=[Depends(require_api_auth)])
+@app.post("/feedback", response_model=FeedbackResponse)
 def feedback(payload: FeedbackRequest, session: Session = Depends(get_session)) -> FeedbackResponse:
     message = session.get(Message, payload.message_id)
     if not message:
@@ -162,6 +164,84 @@ def feedback(payload: FeedbackRequest, session: Session = Depends(get_session)) 
     session.add(Feedback(message_id=message.id, rating=payload.rating, comment=payload.comment))
     session.commit()
     return FeedbackResponse(ok=True)
+
+
+def process_upload(document_id: str, raw_path: str, settings: Settings) -> None:
+    """Background task: embed an uploaded file and flip its document to 'indexed'.
+
+    Runs after the HTTP response so large files don't block the request. Uses its own
+    DB session because the request-scoped session is already closed.
+    """
+    try:
+        with SessionLocal() as session:
+            document = session.get(Document, document_id)
+            if document is None:
+                return
+            index_document_file(session, document, Path(raw_path), OpenAIEmbeddingProvider(settings))
+            session.commit()
+            logger.info("upload_indexed", document_id=document_id, owner_id=document.owner_id)
+    except Exception as exc:  # noqa: BLE001 - mark the doc failed instead of crashing silently
+        logger.error("upload_indexing_failed", document_id=document_id, error=str(exc))
+        with SessionLocal() as session:
+            document = session.get(Document, document_id)
+            if document is not None:
+                document.status = "failed"
+                session.commit()
+    finally:
+        try:
+            os.remove(raw_path)
+        except OSError:
+            pass
+
+
+@app.post("/upload", response_model=UploadResponse)
+def upload(
+    background: BackgroundTasks,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+    app_settings: Settings = Depends(get_settings),
+    owner_id: str = Depends(current_owner_id),
+) -> UploadResponse:
+    extension = Path(file.filename or "").suffix.lower()
+    if extension not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type. Allowed: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+        )
+    raw = file.file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    if len(raw) > app_settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"File exceeds {app_settings.max_upload_mb} MB limit")
+
+    checksum = hashlib.sha256(raw).hexdigest()
+    existing = (
+        session.query(Document)
+        .filter(Document.checksum == checksum, Document.owner_id == owner_id)
+        .one_or_none()
+    )
+    if existing:
+        return UploadResponse(document_id=existing.id, filename=existing.filename, status=existing.status)
+
+    fd, raw_path = tempfile.mkstemp(suffix=extension)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(raw)
+
+    document = Document(
+        owner_id=owner_id,
+        filename=file.filename,
+        title=Path(file.filename).stem.replace("_", " ").replace("-", " "),
+        doc_type=extension.lstrip("."),
+        checksum=checksum,
+        num_pages=0,
+        status="processing",
+    )
+    session.add(document)
+    session.commit()
+    session.refresh(document)
+
+    background.add_task(process_upload, document.id, raw_path, app_settings)
+    return UploadResponse(document_id=document.id, filename=document.filename, status="processing")
 
 
 @app.post("/ingest")
@@ -176,7 +256,9 @@ def ingest(
     path = Path(input_path)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Input path not found")
-    return ingest_path(session, path, OpenAIEmbeddingProvider(app_settings))
+    # Admin bulk-load seeds the shared sample corpus under the seed owner. Per-user
+    # uploads (Phase 2) will own their documents via the authenticated /upload route.
+    return ingest_path(session, path, OpenAIEmbeddingProvider(app_settings), owner_id=SEED_OWNER_ID)
 
 
 @app.post("/ask/stream")
