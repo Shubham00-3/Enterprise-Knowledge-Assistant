@@ -5,11 +5,15 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.models import Conversation, Message
-from app.rag_core.generation.service import generate_answer
-from app.rag_core.interfaces import EmbeddingProvider, LLMProvider
+from app.rag_core.generation.service import AnswerResult, generate_answer
+from app.rag_core.interfaces import EmbeddingProvider, LLMProvider, RetrievedChunk
 from app.rag_core.retrieval.service import retrieve, rewrite_query
 from app.rag_core.utils import snippet
 from app.schemas import AskResponse, Source
+
+# When the model returns no usable citations, show at most this many top-ranked
+# chunks rather than the full retrieval set (keeps off-topic candidates out of the UI).
+SOURCE_FALLBACK_LIMIT = 3
 
 
 def answer_question(
@@ -34,7 +38,7 @@ def answer_question(
         use_rerank=settings.enable_llm_rerank,
         use_hybrid=settings.enable_hybrid,
     )
-    answer, confidence, status = generate_answer(question, chunks, llm, settings)
+    result = generate_answer(question, chunks, llm, settings)
     sources = [
         Source(
             document=chunk.document,
@@ -42,7 +46,7 @@ def answer_question(
             snippet=snippet(chunk.content),
             score=round(chunk.score, 4),
         )
-        for chunk in chunks[: settings.rerank_top_k]
+        for chunk in _select_source_chunks(chunks, result)
     ]
     latency_ms = int((time.perf_counter() - started) * 1000)
 
@@ -50,10 +54,10 @@ def answer_question(
     assistant_message = Message(
         conversation_id=conversation.id,
         role="assistant",
-        content=answer,
+        content=result.answer,
         sources_json=json.dumps([source.model_dump() for source in sources]),
-        confidence=confidence,
-        status=status,
+        confidence=result.confidence,
+        status=result.status,
         latency_ms=latency_ms,
     )
     session.add(assistant_message)
@@ -61,14 +65,33 @@ def answer_question(
     session.refresh(assistant_message)
 
     return AskResponse(
-        answer=answer,
+        answer=result.answer,
         sources=sources,
-        confidence=confidence,
-        status=status,
+        confidence=result.confidence,
+        status=result.status,
         conversation_id=conversation.id,
         message_id=assistant_message.id,
         latency_ms=latency_ms,
     )
+
+
+def _select_source_chunks(
+    chunks: list[RetrievedChunk], result: AnswerResult
+) -> list[RetrievedChunk]:
+    """Show only the chunks the answer is actually built on.
+
+    - Abstained answers cite nothing, so show no sources.
+    - When the model cited specific chunks, show exactly those (in retrieval-rank order).
+    - Otherwise fall back to the top few retrieved chunks instead of the full candidate set.
+    """
+    if result.status == "insufficient_context":
+        return []
+    if result.cited_chunk_ids:
+        cited = set(result.cited_chunk_ids)
+        selected = [chunk for chunk in chunks if chunk.chunk_id in cited]
+        if selected:
+            return selected
+    return chunks[:SOURCE_FALLBACK_LIMIT]
 
 
 def _get_or_create_conversation(session: Session, conversation_id: str | None) -> Conversation:

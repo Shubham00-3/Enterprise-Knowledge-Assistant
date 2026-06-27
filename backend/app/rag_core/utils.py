@@ -56,7 +56,10 @@ def loads_embedding(value: str | None) -> list[float]:
 
 
 def snippet(text: str, max_chars: int = 420) -> str:
-    compact = re.sub(r"\s+", " ", text).strip()
+    # Drop leading markdown heading markers (#, ##, ...) so source previews read as
+    # prose instead of "# HR Policy Handbook ## Paid Leave ...".
+    without_headings = re.sub(r"(?m)^[ \t]*#{1,6}[ \t]+", "", text)
+    compact = re.sub(r"\s+", " ", without_headings).strip()
     if len(compact) <= max_chars:
         return compact
     return compact[: max_chars - 3].rstrip() + "..."

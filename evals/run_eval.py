@@ -83,7 +83,8 @@ def evaluate(cases: list[dict], settings, embeddings, llm, cfg: dict) -> dict:
                 use_rerank=cfg["use_rerank"],
                 use_hybrid=cfg["use_hybrid"],
             )
-            answer, _confidence, status = generate_answer(case["question"], chunks, llm, settings)
+            generated = generate_answer(case["question"], chunks, llm, settings)
+            answer, status = generated.answer, generated.status
             latencies.append((time.perf_counter() - start) * 1000)
 
             if case["type"] == "unanswerable":

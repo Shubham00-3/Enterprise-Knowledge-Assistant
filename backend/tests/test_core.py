@@ -1,11 +1,33 @@
-from app.rag_core.generation.service import confidence_score, generate_answer
+from app.rag_core.generation.service import (
+    CONFIDENCE_CEILING,
+    confidence_score,
+    generate_answer,
+)
 from app.rag_core.ingestion.chunker import chunk_pages
 from app.rag_core.interfaces import LoadedPage, RetrievedChunk
+from app.rag_core.pipeline import _select_source_chunks
 
 
 class EmptyLLM:
     def complete_json(self, system: str, user: str, schema_name: str) -> dict:
         return {}
+
+    def complete_text(self, system: str, user: str) -> str:
+        return ""
+
+
+class CitingLLM:
+    """Stub generator that answers and cites a fixed set of chunk ids."""
+
+    def __init__(self, cited_ids: list[str]) -> None:
+        self.cited_ids = cited_ids
+
+    def complete_json(self, system: str, user: str, schema_name: str) -> dict:
+        return {
+            "answer": "Employees receive 24 paid leaves annually.",
+            "insufficient_context": False,
+            "claims": [{"text": "24 paid leaves", "chunk_id": cid} for cid in self.cited_ids],
+        }
 
     def complete_text(self, system: str, user: str) -> str:
         return ""
@@ -29,15 +51,18 @@ def test_chunking_preserves_page_metadata() -> None:
 
 
 def test_confidence_is_clamped() -> None:
-    assert confidence_score(100, 1.0) == 1.0
+    # A bounded heuristic never advertises a perfect 100%.
+    assert confidence_score(100, 1.0) == CONFIDENCE_CEILING
+    assert confidence_score(100, 1.0) < 1.0
     assert confidence_score(-1, 0.0) == 0.0
 
 
 def test_generation_abstains_on_weak_evidence() -> None:
-    answer, confidence, status = generate_answer("Unknown?", [], EmptyLLM(), SettingsStub())
-    assert status == "insufficient_context"
-    assert confidence == 0.0
-    assert "could not find" in answer.lower()
+    result = generate_answer("Unknown?", [], EmptyLLM(), SettingsStub())
+    assert result.status == "insufficient_context"
+    assert result.confidence == 0.0
+    assert "could not find" in result.answer.lower()
+    assert result.cited_chunk_ids == []
 
 
 def test_generation_falls_back_with_grounded_context() -> None:
@@ -50,10 +75,52 @@ def test_generation_falls_back_with_grounded_context() -> None:
         score=0.2,
         similarity=0.5,
     )
-    answer, confidence, status = generate_answer("Leave?", [chunk], EmptyLLM(), SettingsStub())
-    assert status == "answered"
-    assert confidence > 0
-    assert "24 paid leaves" in answer
+    result = generate_answer("Leave?", [chunk], EmptyLLM(), SettingsStub())
+    assert result.status == "answered"
+    assert result.confidence > 0
+    assert "24 paid leaves" in result.answer
+
+
+def _chunk(chunk_id: str, document: str) -> RetrievedChunk:
+    return RetrievedChunk(
+        chunk_id=chunk_id,
+        document_id=f"doc-{chunk_id}",
+        document=document,
+        page=1,
+        content=f"content for {document}",
+        score=0.3,
+        similarity=0.5,
+    )
+
+
+def test_sources_limited_to_cited_chunks() -> None:
+    # Reproduces the reported bug: retrieval returns several off-topic chunks, but
+    # the answer only cites the HR chunk -> only that source should surface.
+    chunks = [
+        _chunk("hr1", "HR_Policy_Handbook.md"),
+        _chunk("it1", "IT_Access_Management.md"),
+        _chunk("bill1", "Customer_FAQ_Billing.md"),
+    ]
+    result = generate_answer("paid leave?", chunks, CitingLLM(["hr1"]), SettingsStub())
+    assert result.status == "answered"
+    assert result.cited_chunk_ids == ["hr1"]
+
+    selected = _select_source_chunks(chunks, result)
+    assert [c.chunk_id for c in selected] == ["hr1"]
+
+
+def test_source_selection_drops_sources_when_abstaining() -> None:
+    chunks = [_chunk("hr1", "HR_Policy_Handbook.md")]
+    result = generate_answer("Unknown?", [], EmptyLLM(), SettingsStub())
+    assert _select_source_chunks(chunks, result) == []
+
+
+def test_source_selection_falls_back_to_top_chunks_without_citations() -> None:
+    chunks = [_chunk(str(i), f"Doc{i}.md") for i in range(6)]
+    # EmptyLLM returns no claims -> fall back to a bounded top-N, not the full set.
+    result = generate_answer("Leave?", chunks, EmptyLLM(), SettingsStub())
+    selected = _select_source_chunks(chunks, result)
+    assert 0 < len(selected) <= 3
 
 
 def test_chunks_never_span_pages() -> None:
