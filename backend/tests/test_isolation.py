@@ -88,6 +88,28 @@ def test_ask_pipeline_never_leaks_other_users_sources() -> None:
     docs = {s.document for s in resp.sources}
     assert docs == {"alice-doc.md"}
     assert "bob-doc.md" not in docs
+    assert resp.sources[0].document_id == "alice-doc"
+    assert resp.sources[0].chunk_id == "alice-chunk"
+    assert resp.metrics.citation_count == 1
+    assert resp.metrics.top_source_score is not None
+    assert resp.metrics.status == resp.status
+    assert resp.metrics.latency_ms == resp.latency_ms
+
+
+def test_insufficient_context_returns_no_sources_and_valid_metrics() -> None:
+    Session = _make_db()
+    with Session() as session:
+        resp = answer_question(
+            session=session, question="What is the private roadmap codename?", conversation_id=None,
+            settings=_settings(), embeddings=FakeEmbeddings(), llm=CitingLLM(), owner_id="carol",
+        )
+    assert resp.status == "insufficient_context"
+    assert resp.sources == []
+    assert resp.metrics.confidence == 0.0
+    assert resp.metrics.citation_count == 0
+    assert resp.metrics.top_source_score is None
+    assert resp.metrics.status == resp.status
+    assert resp.metrics.latency_ms == resp.latency_ms
 
 
 def test_bob_query_cannot_see_alice_data() -> None:

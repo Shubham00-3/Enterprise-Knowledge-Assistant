@@ -9,10 +9,21 @@ class AskRequest(BaseModel):
 
 
 class Source(BaseModel):
+    document_id: str
+    chunk_id: str
     document: str
     page: int
+    section_title: str | None = None
     snippet: str
     score: float
+
+
+class AnswerMetrics(BaseModel):
+    confidence: float
+    citation_count: int
+    top_source_score: float | None = None
+    status: Literal["answered", "insufficient_context"]
+    latency_ms: int
 
 
 class AskResponse(BaseModel):
@@ -23,6 +34,7 @@ class AskResponse(BaseModel):
     conversation_id: str
     message_id: str
     latency_ms: int
+    metrics: AnswerMetrics
 
 
 class DocumentStatus(BaseModel):
@@ -31,6 +43,24 @@ class DocumentStatus(BaseModel):
     doc_type: str
     num_pages: int
     status: str
+
+
+class ArtifactChunk(BaseModel):
+    chunk_id: str
+    chunk_index: int
+    page: int
+    section_title: str | None = None
+    content: str
+
+
+class DocumentArtifact(BaseModel):
+    id: str
+    document: str
+    title: str
+    doc_type: str
+    num_pages: int
+    status: str
+    chunks: list[ArtifactChunk]
 
 
 class UploadResponse(BaseModel):

@@ -8,6 +8,7 @@ import {
   ThumbsDown,
   ThumbsUp,
   Upload,
+  X,
 } from "lucide-react";
 
 import { Login } from "./Login";
@@ -34,6 +35,14 @@ export function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [upload, setUpload] = useState(null); // { name, status }
+  const [artifact, setArtifact] = useState({
+    open: false,
+    loading: false,
+    data: null,
+    error: "",
+    highlightChunkId: null,
+    highlightChunkIds: [],
+  });
   const threadEndRef = useRef(null);
   const fileRef = useRef(null);
 
@@ -154,11 +163,63 @@ export function App() {
     setUpload({ name, status: "processing", error: "Still indexing — check back shortly." });
   }
 
+  async function openArtifact(source) {
+    if (!source?.document_id) return;
+    const highlightChunkIds = source.chunk_ids || (source.chunk_id ? [source.chunk_id] : []);
+    setArtifact({
+      open: true,
+      loading: true,
+      data: null,
+      error: "",
+      highlightChunkId: source.chunk_id,
+      highlightChunkIds,
+    });
+    try {
+      const res = await fetch(`${API_BASE}/documents/${source.document_id}/artifact`, {
+        headers: authHeaders(false),
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}));
+        throw new Error(detail.detail || "Could not open the document.");
+      }
+      const data = await res.json();
+      setArtifact({
+        open: true,
+        loading: false,
+        data,
+        error: "",
+        highlightChunkId: source.chunk_id,
+        highlightChunkIds,
+      });
+    } catch (err) {
+      setArtifact({
+        open: true,
+        loading: false,
+        data: null,
+        error: err.message,
+        highlightChunkId: source.chunk_id,
+        highlightChunkIds,
+      });
+    }
+  }
+
+  function closeArtifact() {
+    setArtifact({
+      open: false,
+      loading: false,
+      data: null,
+      error: "",
+      highlightChunkId: null,
+      highlightChunkIds: [],
+    });
+  }
+
   async function signOut() {
     await supabase.auth.signOut();
     setEntries([]);
     setConversationId(null);
     setDocuments([]);
+    closeArtifact();
   }
 
   if (authEnabled && !authReady) {
@@ -237,6 +298,7 @@ export function App() {
               index={index}
               loading={loading && index === entries.length - 1 && !entry.answer}
               onFeedback={sendFeedback}
+              onOpenArtifact={openArtifact}
             />
           ))}
           {error && <p className="error">{error}</p>}
@@ -255,6 +317,7 @@ export function App() {
           />
         </div>
       )}
+      <DocumentArtifactPanel artifact={artifact} onClose={closeArtifact} />
     </div>
   );
 
@@ -319,7 +382,7 @@ function Composer({ value, onChange, onSubmit, loading, placeholder, autoFocus }
   );
 }
 
-function Entry({ entry, index, loading, onFeedback }) {
+function Entry({ entry, index, loading, onFeedback, onOpenArtifact }) {
   const { question, answer } = entry;
   return (
     <section className="entry">
@@ -333,17 +396,6 @@ function Entry({ entry, index, loading, onFeedback }) {
 
       {answer && (
         <>
-          {answer.sources?.length > 0 && (
-            <div className="sources-block">
-              <div className="section-label">Sources</div>
-              <div className="source-grid">
-                {answer.sources.map((source, i) => (
-                  <SourceCard key={`${source.document}-${i}`} index={i + 1} source={source} />
-                ))}
-              </div>
-            </div>
-          )}
-
           <div className="answer-block">
             <div className="section-label">Answer</div>
             {answer.status === "insufficient_context" && (
@@ -352,12 +404,13 @@ function Entry({ entry, index, loading, onFeedback }) {
             <p className="answer-text">{answer.answer}</p>
           </div>
 
+          {answer.sources?.length > 0 && (
+            <CitationStrip sources={answer.sources} onOpenArtifact={onOpenArtifact} />
+          )}
+
           <div className="answer-footer">
-            <span className={`confidence ${answer.status}`}>
-              {Math.round((answer.confidence || 0) * 100)}% confidence
-            </span>
+            <AnswerMetrics answer={answer} />
             <span className="dot">·</span>
-            <span className="latency">{answer.latency_ms} ms</span>
             <div className="spacer" />
             <button
               className={`feedback-btn ${answer.feedback === "up" ? "active" : ""}`}
@@ -380,19 +433,141 @@ function Entry({ entry, index, loading, onFeedback }) {
   );
 }
 
-function SourceCard({ index, source }) {
-  const [open, setOpen] = useState(false);
+function CitationStrip({ sources, onOpenArtifact }) {
+  const citations = groupSources(sources);
   return (
-    <button className={`source-card ${open ? "open" : ""}`} onClick={() => setOpen((v) => !v)}>
-      <div className="source-head">
-        <span className="source-index">{index}</span>
-        <FileText size={13} />
-        <span className="source-name" title={source.document}>
-          {source.document}
-        </span>
-        <span className="source-page">p.{source.page}</span>
+    <div className="citations-block" aria-label="Citations">
+      <div className="section-label">Citations</div>
+      <div className="citation-row">
+        {citations.map((citation) => (
+          <button
+            key={citation.document_id || citation.document}
+            className="citation-chip"
+            onClick={() =>
+              onOpenArtifact({ ...citation.primary, chunk_ids: citation.chunk_ids })
+            }
+            title={`${citation.document}${citation.primary.page ? `, page ${citation.primary.page}` : ""}`}
+          >
+            <FileText size={13} />
+            <span>{citation.document}</span>
+            {citation.count > 1 && <em>{citation.count}</em>}
+          </button>
+        ))}
       </div>
-      <p className="source-snippet">{source.snippet}</p>
-    </button>
+    </div>
   );
+}
+
+function AnswerMetrics({ answer }) {
+  const metrics = answer.metrics || {};
+  const confidence = metrics.confidence ?? answer.confidence ?? 0;
+  const citationCount = metrics.citation_count ?? answer.sources?.length ?? 0;
+  const topSourceScore = metrics.top_source_score;
+  const status = metrics.status ?? answer.status;
+  const latency = metrics.latency_ms ?? answer.latency_ms;
+
+  return (
+    <div className="metric-row" aria-label="Answer metrics">
+      <span className="metric-chip">
+        {Math.round(confidence * 100)}% confidence
+      </span>
+      <span className="metric-chip">{citationCount} citations</span>
+      <span className="metric-chip">
+        top score {typeof topSourceScore === "number" ? topSourceScore.toFixed(2) : "n/a"}
+      </span>
+      <span className={`metric-chip ${status}`}>{statusLabel(status)}</span>
+      <span className="metric-chip">{latency} ms</span>
+    </div>
+  );
+}
+
+function DocumentArtifactPanel({ artifact, onClose }) {
+  const activeRef = useRef(null);
+
+  useEffect(() => {
+    if (!artifact.open || artifact.loading || !activeRef.current) return;
+    activeRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [artifact.open, artifact.loading, artifact.highlightChunkId, artifact.data]);
+
+  if (!artifact.open) return null;
+
+  const document = artifact.data;
+
+  return (
+    <aside className="artifact-panel" aria-label="Document artifact">
+      <div className="artifact-header">
+        <div>
+          <div className="section-label">Artifact</div>
+          <h3>{document?.title || document?.document || "Document"}</h3>
+          {document && (
+            <p>
+              {document.doc_type.toUpperCase()} / {document.chunks.length} indexed sections
+            </p>
+          )}
+        </div>
+        <button className="artifact-close" onClick={onClose} aria-label="Close artifact">
+          <X size={18} />
+        </button>
+      </div>
+
+      <div className="artifact-body">
+        {artifact.loading && (
+          <div className="artifact-state">
+            <Loader2 className="spin" size={16} /> Loading document...
+          </div>
+        )}
+        {artifact.error && <div className="artifact-error">{artifact.error}</div>}
+        {!artifact.loading &&
+          !artifact.error &&
+          document?.chunks.map((chunk) => {
+            const active = artifact.highlightChunkIds?.includes(chunk.chunk_id);
+            const scrollTarget = chunk.chunk_id === artifact.highlightChunkId;
+            return (
+              <section
+                key={chunk.chunk_id}
+                ref={scrollTarget ? activeRef : null}
+                className={`artifact-chunk ${active ? "highlight" : ""}`}
+              >
+                <div className="artifact-meta">
+                  <span>{chunk.section_title || `Section ${chunk.chunk_index + 1}`}</span>
+                  <span>p.{chunk.page}</span>
+                </div>
+                <p>{chunk.content}</p>
+              </section>
+            );
+          })}
+      </div>
+    </aside>
+  );
+}
+
+function groupSources(sources) {
+  const grouped = new Map();
+  for (const source of sources || []) {
+    const key = source.document_id || source.document;
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, {
+        document_id: source.document_id,
+        document: source.document,
+        count: 1,
+        primary: source,
+        chunk_ids: source.chunk_id ? [source.chunk_id] : [],
+      });
+      continue;
+    }
+    existing.count += 1;
+    if (source.chunk_id && !existing.chunk_ids.includes(source.chunk_id)) {
+      existing.chunk_ids.push(source.chunk_id);
+    }
+    if ((source.score ?? 0) > (existing.primary.score ?? 0)) {
+      existing.primary = source;
+    }
+  }
+  return [...grouped.values()];
+}
+
+function statusLabel(status) {
+  if (status === "insufficient_context") return "needs more context";
+  return "answered";
 }

@@ -9,7 +9,7 @@ from app.rag_core.generation.service import AnswerResult, generate_answer
 from app.rag_core.interfaces import EmbeddingProvider, LLMProvider, RetrievedChunk
 from app.rag_core.retrieval.service import retrieve, rewrite_query
 from app.rag_core.utils import snippet
-from app.schemas import AskResponse, Source
+from app.schemas import AnswerMetrics, AskResponse, Source
 
 # When the model returns no usable citations, show at most this many top-ranked
 # chunks rather than the full retrieval set (keeps off-topic candidates out of the UI).
@@ -45,14 +45,24 @@ def answer_question(
     result = generate_answer(question, chunks, llm, settings)
     sources = [
         Source(
+            document_id=chunk.document_id,
+            chunk_id=chunk.chunk_id,
             document=chunk.document,
             page=chunk.page,
+            section_title=chunk.section_title,
             snippet=snippet(chunk.content),
             score=round(chunk.score, 4),
         )
         for chunk in _select_source_chunks(chunks, result)
     ]
     latency_ms = int((time.perf_counter() - started) * 1000)
+    metrics = AnswerMetrics(
+        confidence=result.confidence,
+        citation_count=len(sources),
+        top_source_score=max((source.score for source in sources), default=None),
+        status=result.status,
+        latency_ms=latency_ms,
+    )
 
     session.add(Message(conversation_id=conversation.id, role="user", content=question))
     assistant_message = Message(
@@ -76,6 +86,7 @@ def answer_question(
         conversation_id=conversation.id,
         message_id=assistant_message.id,
         latency_ms=latency_ms,
+        metrics=metrics,
     )
 
 

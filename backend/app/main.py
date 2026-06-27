@@ -27,6 +27,8 @@ from app.rag_core.providers import OpenAIEmbeddingProvider, OpenAILLMProvider
 from app.schemas import (
     AskRequest,
     AskResponse,
+    ArtifactChunk,
+    DocumentArtifact,
     DocumentStatus,
     FeedbackRequest,
     FeedbackResponse,
@@ -132,6 +134,42 @@ def documents(
         )
         for row in rows
     ]
+
+
+@app.get("/documents/{document_id}/artifact", response_model=DocumentArtifact)
+def document_artifact(
+    document_id: str,
+    session: Session = Depends(get_session),
+    owner_id: str = Depends(current_owner_id),
+) -> DocumentArtifact:
+    document = session.scalar(
+        select(Document).where(Document.id == document_id, Document.owner_id == owner_id)
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    chunks = session.scalars(
+        select(Chunk)
+        .where(Chunk.document_id == document.id, Chunk.owner_id == owner_id)
+        .order_by(Chunk.chunk_index.asc())
+    ).all()
+    return DocumentArtifact(
+        id=document.id,
+        document=document.filename,
+        title=document.title,
+        doc_type=document.doc_type,
+        num_pages=document.num_pages,
+        status=document.status,
+        chunks=[
+            ArtifactChunk(
+                chunk_id=chunk.id,
+                chunk_index=chunk.chunk_index,
+                page=chunk.page_start,
+                section_title=chunk.section_title,
+                content=chunk.content,
+            )
+            for chunk in chunks
+        ],
+    )
 
 
 @app.post("/ask", response_model=AskResponse)

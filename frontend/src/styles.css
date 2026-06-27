@@ -496,6 +496,60 @@ input {
   -webkit-line-clamp: unset;
 }
 
+.citations-block {
+  margin: -4px 0 16px;
+}
+
+.citation-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.citation-chip {
+  max-width: 280px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 7px 11px;
+  font-size: 13px;
+  font-weight: 540;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+.citation-chip:hover {
+  background: var(--surface-hover);
+  border-color: #d6d8de;
+  transform: translateY(-1px);
+}
+
+.citation-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.citation-chip em {
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #e6f3f5;
+  color: var(--accent-ink);
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 /* Answer */
 .answer-block {
   margin-bottom: 16px;
@@ -527,6 +581,42 @@ input {
   gap: 8px;
   font-size: 12.5px;
   color: var(--text-soft);
+}
+
+.answer-footer .dot {
+  display: none;
+}
+
+.metric-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.metric-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 25px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-soft);
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.metric-chip.answered {
+  color: var(--accent-ink);
+  background: #eef9fb;
+  border-color: #b9dde3;
+}
+
+.metric-chip.insufficient_context {
+  color: var(--amber);
+  background: var(--amber-bg);
+  border-color: #f1d99b;
 }
 
 .confidence {
@@ -567,6 +657,126 @@ input {
   color: #fff;
 }
 
+/* Artifact panel */
+.artifact-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  width: min(460px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  box-shadow: -12px 0 34px rgba(15, 23, 42, 0.14);
+}
+
+.artifact-header {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.artifact-header h3 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.artifact-header p {
+  margin: 6px 0 0;
+  color: var(--text-soft);
+  font-size: 12.5px;
+}
+
+.artifact-close {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.artifact-close:hover {
+  background: var(--surface-hover);
+}
+
+.artifact-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px 28px;
+}
+
+.artifact-state,
+.artifact-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-soft);
+  font-size: 13.5px;
+}
+
+.artifact-error {
+  color: #b42318;
+  background: #fdf3f2;
+  border: 1px solid #f1c0bb;
+}
+
+.artifact-chunk {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  padding: 13px 14px;
+  margin-bottom: 10px;
+  scroll-margin: 84px;
+}
+
+.artifact-chunk.highlight {
+  border-color: var(--accent);
+  background: #f0fbfd;
+  box-shadow: 0 0 0 3px rgba(15, 125, 139, 0.12);
+}
+
+.artifact-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 650;
+  margin-bottom: 8px;
+}
+
+.artifact-meta span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-chunk p {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
 /* Docked composer */
 .composer-dock {
   position: sticky;
@@ -593,5 +803,15 @@ input {
   }
   .question {
     font-size: 21px;
+  }
+  .artifact-panel {
+    width: 100vw;
+    border-left: 0;
+  }
+  .artifact-header {
+    padding: 16px 16px 13px;
+  }
+  .artifact-body {
+    padding: 14px 14px 24px;
   }
 }
