@@ -8,6 +8,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 SEED_OWNER_ID = "public-seed"
 
 
+def readable_owner_ids(owner_id: str) -> list[str]:
+    """Owners a request may read from.
+
+    Authenticated users read their own uploads plus the bundled sample corpus.
+    The seed owner itself should not be duplicated when auth is disabled.
+    """
+    if owner_id == SEED_OWNER_ID:
+        return [SEED_OWNER_ID]
+    return [owner_id, SEED_OWNER_ID]
+
+
 def _default_database_url() -> str:
     """Anchor the local SQLite DB to <repo>/backend/.local so the path is the
     same no matter which directory the app or CLI is launched from."""

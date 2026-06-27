@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
 from app.auth import SEED_OWNER_ID, current_owner_id
-from app.config import Settings, get_settings
+from app.config import Settings, get_settings, readable_owner_ids
 from app.db import SessionLocal, get_session, init_local_db, readiness_check
 from app.models import Chunk, Document, Feedback, Message
 from app.rag_core.ingestion.loaders import SUPPORTED_EXTENSIONS
@@ -122,8 +122,9 @@ def documents(
     session: Session = Depends(get_session),
     owner_id: str = Depends(current_owner_id),
 ) -> list[DocumentStatus]:
+    owner_ids = readable_owner_ids(owner_id)
     rows = session.scalars(
-        select(Document).where(Document.owner_id == owner_id).order_by(Document.created_at.desc())
+        select(Document).where(Document.owner_id.in_(owner_ids)).order_by(Document.created_at.desc())
     ).all()
     return [
         DocumentStatus(
@@ -148,19 +149,20 @@ def document_artifact(
     session: Session = Depends(get_session),
     owner_id: str = Depends(current_owner_id),
 ) -> DocumentArtifact:
+    owner_ids = readable_owner_ids(owner_id)
     document = session.scalar(
-        select(Document).where(Document.id == document_id, Document.owner_id == owner_id)
+        select(Document).where(Document.id == document_id, Document.owner_id.in_(owner_ids))
     )
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     total_chunks = session.scalar(
         select(func.count())
         .select_from(Chunk)
-        .where(Chunk.document_id == document.id, Chunk.owner_id == owner_id)
+        .where(Chunk.document_id == document.id, Chunk.owner_id.in_(owner_ids))
     ) or 0
     chunks = session.scalars(
         select(Chunk)
-        .where(Chunk.document_id == document.id, Chunk.owner_id == owner_id)
+        .where(Chunk.document_id == document.id, Chunk.owner_id.in_(owner_ids))
         .order_by(Chunk.chunk_index.asc())
         .limit(ARTIFACT_MAX_CHUNKS)
     ).all()

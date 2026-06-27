@@ -58,7 +58,7 @@ def generate_answer(
     if insufficient:
         return AnswerResult(
             answer.strip(),
-            round(min(confidence, 0.3), 2),
+            0.0,
             "insufficient_context",
             None,
             [],
@@ -66,7 +66,7 @@ def generate_answer(
     if grounded_ratio < settings.groundedness_threshold:
         return AnswerResult(
             "I could not find enough supported information in the knowledge base.",
-            round(min(confidence, 0.3), 2),
+            0.0,
             "insufficient_context",
             None,
             [],

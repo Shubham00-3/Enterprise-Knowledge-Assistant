@@ -1,9 +1,10 @@
 import re
 
 import structlog
-from sqlalchemy import select, text
+from sqlalchemy import bindparam, select, text
 from sqlalchemy.orm import Session
 
+from app.config import readable_owner_ids
 from app.models import Chunk, Document
 from app.rag_core.interfaces import EmbeddingProvider, LLMProvider, RetrievedChunk
 from app.rag_core.utils import cosine, loads_embedding, reciprocal_rank_fusion
@@ -174,10 +175,11 @@ def _python_candidates(
     owner_id: str,
 ) -> Candidates:
     """Brute-force scoring used for the local SQLite path (small corpus)."""
+    owner_ids = readable_owner_ids(owner_id)
     rows = session.execute(
         select(Chunk, Document)
         .join(Document, Chunk.document_id == Document.id)
-        .where(Chunk.owner_id == owner_id)
+        .where(Chunk.owner_id.in_(owner_ids))
     ).all()
     dense: list[tuple[str, float]] = []
     keyword: list[tuple[str, float]] = []
@@ -201,27 +203,28 @@ def _postgres_candidates(
 ) -> Candidates:
     """Index-backed retrieval: pgvector (halfvec/HNSW cosine) + Postgres full-text search.
 
-    Both retrievers are scoped to owner_id so one user's query can never surface
-    another user's chunks.
+    Both retrievers are scoped to the caller's readable owners, so every user can read
+    the shared sample corpus while private uploads stay isolated to their owner.
     """
+    owner_ids = readable_owner_ids(owner_id)
     vector_literal = "[" + ",".join(str(float(value)) for value in query_vector) + "]"
     limit = max(top_k * 2, 12)
 
     dense_rows = session.execute(
         text(
             "SELECT id, 1 - (embedding <=> CAST(:qvec AS halfvec)) AS sim "
-            "FROM chunks WHERE embedding IS NOT NULL AND owner_id = :owner "
+            "FROM chunks WHERE embedding IS NOT NULL AND owner_id IN :owners "
             "ORDER BY embedding <=> CAST(:qvec AS halfvec) LIMIT :limit"
-        ),
-        {"qvec": vector_literal, "limit": limit, "owner": owner_id},
+        ).bindparams(bindparam("owners", expanding=True)),
+        {"qvec": vector_literal, "limit": limit, "owners": owner_ids},
     ).all()
     keyword_rows = session.execute(
         text(
             "SELECT id, ts_rank(tsv, websearch_to_tsquery('english', :q)) AS rank "
-            "FROM chunks WHERE owner_id = :owner AND tsv @@ websearch_to_tsquery('english', :q) "
+            "FROM chunks WHERE owner_id IN :owners AND tsv @@ websearch_to_tsquery('english', :q) "
             "ORDER BY rank DESC LIMIT :limit"
-        ),
-        {"q": question, "limit": limit, "owner": owner_id},
+        ).bindparams(bindparam("owners", expanding=True)),
+        {"q": question, "limit": limit, "owners": owner_ids},
     ).all()
 
     dense = [(row.id, float(row.sim)) for row in dense_rows]

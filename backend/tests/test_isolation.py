@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.config import Settings
+from app.config import SEED_OWNER_ID, Settings
 from app.db import Base
 from app.models import Chunk, Document
 from app.rag_core.pipeline import answer_question
@@ -46,6 +46,8 @@ def _make_db():
                    text="Paid leave is 24 days per year for all employees.")
         _add_chunk(session, owner="bob", chunk_id="bob-chunk", doc="bob-doc",
                    text="Paid leave is 30 days per year and the secret project is codename Falcon.")
+        _add_chunk(session, owner=SEED_OWNER_ID, chunk_id="seed-429", doc="seed-api",
+                   text="API clients should retry 429 responses with exponential backoff.")
         session.commit()
     return Session
 
@@ -76,6 +78,19 @@ def test_retrieval_is_scoped_to_owner() -> None:
     owners = {c.chunk_id for c in alice_hits}
     assert owners  # alice sees her own chunk
     assert "bob-chunk" not in owners  # and never bob's
+
+
+def test_retrieval_includes_shared_seed_corpus_for_authenticated_users() -> None:
+    Session = _make_db()
+    with Session() as session:
+        alice_hits = retrieve(
+            session=session, question="what should api clients do for 429 responses",
+            embeddings=FakeEmbeddings(), llm=CitingLLM(), top_k=8, rerank_top_k=6,
+            use_rerank=False, owner_id="alice",
+        )
+    ids = {c.chunk_id for c in alice_hits}
+    assert "seed-429" in ids
+    assert "bob-chunk" not in ids
 
 
 def test_ask_pipeline_never_leaks_other_users_sources() -> None:
@@ -127,7 +142,8 @@ def test_insufficient_context_returns_no_sources_and_valid_metrics() -> None:
 
 
 def test_bob_query_cannot_see_alice_data() -> None:
-    # Bob asks the same question; he must only ever get his own chunk back.
+    # Bob asks the same question; he can see his private chunk and the shared corpus,
+    # but must never see Alice's private chunk.
     Session = _make_db()
     with Session() as session:
         bob_hits = retrieve(
@@ -135,5 +151,5 @@ def test_bob_query_cannot_see_alice_data() -> None:
             llm=CitingLLM(), top_k=8, rerank_top_k=6, use_rerank=False, owner_id="bob",
         )
     ids = {c.chunk_id for c in bob_hits}
-    assert ids == {"bob-chunk"}
+    assert "bob-chunk" in ids
     assert "alice-chunk" not in ids

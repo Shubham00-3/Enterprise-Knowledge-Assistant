@@ -211,7 +211,7 @@ The backend stores conversations and messages. Follow-up questions can be rewrit
 The app supports per-user data isolation backed by Supabase Auth:
 
 - Admin bulk ingestion requires `x-admin-api-key` and seeds the shared sample corpus.
-- When `REQUIRE_AUTH=true`, `/ask`, `/documents`, `/upload`, and `/feedback` require a valid Supabase JWT. The backend verifies modern Supabase ES256 tokens through `SUPABASE_URL`/`SUPABASE_JWKS_URL`, with `SUPABASE_JWT_SECRET` retained only as the legacy HS256 fallback. Every document, chunk, query, and upload is scoped to that user's id (`sub`). Retrieval SQL filters on `owner_id`, so one user's question can never surface another user's chunks (see `backend/tests/test_isolation.py`).
+- When `REQUIRE_AUTH=true`, `/ask`, `/documents`, `/upload`, and `/feedback` require a valid Supabase JWT. The backend verifies modern Supabase ES256 tokens through `SUPABASE_URL`/`SUPABASE_JWKS_URL`, with `SUPABASE_JWT_SECRET` retained only as the legacy HS256 fallback. Reads include the shared sample corpus (`public-seed`) plus the current user's uploads; writes stay scoped to that user's id (`sub`). Retrieval SQL filters on this readable owner set, so one user's question can use the bundled demo corpus but can never surface another user's private chunks (see `backend/tests/test_isolation.py`).
 - When `REQUIRE_AUTH=false` (default), all data belongs to a single seed user and the app behaves like the original single-pool MVP.
 
 Authenticated users upload their own documents via `POST /upload` (PDF/Markdown/text/DOCX). The document is created immediately as `processing` and embedded in a background task, so large files do not block the request; the UI polls `/documents` until the status flips to `indexed`.

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from app.auth import current_owner_id  # noqa: E402
+from app.config import SEED_OWNER_ID  # noqa: E402
 from app.db import Base, get_session  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Chunk, Document  # noqa: E402
@@ -65,6 +66,33 @@ def _make_session() -> sessionmaker[Session]:
         )
         session.add(
             Document(
+                id="seed-doc",
+                owner_id=SEED_OWNER_ID,
+                filename="API_Client_Guide.md",
+                title="API Client Guide",
+                doc_type="md",
+                checksum="seed-sum",
+                num_pages=1,
+                status="indexed",
+            )
+        )
+        session.add(
+            Chunk(
+                id="seed-c1",
+                document_id="seed-doc",
+                owner_id=SEED_OWNER_ID,
+                chunk_index=0,
+                content="API clients should use exponential backoff for 429 responses.",
+                page_start=1,
+                page_end=1,
+                section_title="Rate Limits",
+                token_count=9,
+                embedding_json="[]",
+                search_text="API clients should use exponential backoff for 429 responses.",
+            )
+        )
+        session.add(
+            Document(
                 id="bob-doc",
                 owner_id="bob",
                 filename="Private.md",
@@ -103,6 +131,49 @@ def test_artifact_returns_ordered_chunks_for_current_owner() -> None:
     assert body["truncated"] is False
 
 
+def test_artifact_allows_shared_seed_documents_for_current_owner() -> None:
+    TestSession = _make_session()
+    previous = dict(app.dependency_overrides)
+
+    def _get_session() -> Generator[Session, None, None]:
+        with TestSession() as session:
+            yield session
+
+    try:
+        app.dependency_overrides[get_session] = _get_session
+        app.dependency_overrides[current_owner_id] = lambda: "alice"
+        response = TestClient(app).get("/documents/seed-doc/artifact")
+    finally:
+        app.dependency_overrides = previous
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["id"] == "seed-doc"
+    assert body["document"] == "API_Client_Guide.md"
+    assert body["chunks"][0]["chunk_id"] == "seed-c1"
+
+
+def test_documents_list_includes_shared_seed_and_current_owner_only() -> None:
+    TestSession = _make_session()
+    previous = dict(app.dependency_overrides)
+
+    def _get_session() -> Generator[Session, None, None]:
+        with TestSession() as session:
+            yield session
+
+    try:
+        app.dependency_overrides[get_session] = _get_session
+        app.dependency_overrides[current_owner_id] = lambda: "alice"
+        response = TestClient(app).get("/documents")
+    finally:
+        app.dependency_overrides = previous
+
+    assert response.status_code == 200, response.text
+    ids = {row["id"] for row in response.json()}
+    assert {"alice-doc", "seed-doc"}.issubset(ids)
+    assert "bob-doc" not in ids
+
+
 def test_artifact_returns_404_for_unknown_document() -> None:
     TestSession = _make_session()
     previous = dict(app.dependency_overrides)
@@ -137,4 +208,3 @@ def test_artifact_rejects_documents_outside_owner_scope() -> None:
         app.dependency_overrides = previous
 
     assert response.status_code == 404
-
