@@ -10,15 +10,15 @@ Runtime architecture:
 flowchart LR
   User["Employee"] --> UI["React/Vite Frontend on Vercel"]
   UI --> API["FastAPI Backend on Railway"]
-  API --> DB["Railway Postgres + pgvector"]
+  API --> DB["Supabase Postgres + pgvector"]
   API --> LLM["OpenAI Models"]
   CLI["Ingestion CLI"] --> DB
   CLI --> LLM
 ```
 
-The frontend is a React/Vite app that provides the chat experience, document status panel, citation cards, confidence/status display, and user feedback controls. The backend is a stateless FastAPI service that owns ingestion, retrieval, answer generation, feedback, and health checks. Railway Postgres with pgvector is the single durable store for documents, chunks, embeddings, conversations, messages, feedback, and evaluation results.
+The frontend is a React/Vite app that provides the chat experience, document status panel, citation cards, confidence/status display, and user feedback controls. The backend is a stateless FastAPI service that owns ingestion, retrieval, answer generation, feedback, and health checks. Supabase Postgres with pgvector is the single durable store for documents, chunks, embeddings, conversations, messages, feedback, and evaluation results.
 
-This architecture keeps deployment simple: Vercel hosts the frontend, Railway hosts the backend, and Railway Postgres provides both relational storage and vector search. Docker is not required.
+This architecture keeps deployment simple: Vercel hosts the frontend, Railway hosts the Python FastAPI backend, and Supabase provides managed Postgres plus pgvector. Docker is not required.
 
 ## Data Flow
 
@@ -105,7 +105,7 @@ The evaluation runner uses labelled questions to measure answer accuracy, citati
 
 The backend is stateless, so multiple Railway instances can serve traffic behind the platform router. Persistent state lives in Postgres. This makes horizontal scaling straightforward for the API tier.
 
-Postgres + pgvector is a pragmatic choice for this assignment and for small-to-medium enterprise corpora. It reduces operational complexity because the same database stores application state and vector indexes. The HNSW index supports efficient approximate nearest-neighbor search, and `halfvec(3072)` supports the configured embedding dimensionality.
+Supabase Postgres + pgvector is a pragmatic choice for this assignment and for small-to-medium enterprise corpora. It reduces operational complexity because the same database stores application state and vector indexes, while Supabase also provides a dashboard, SQL editor, and a future path to Auth and Storage. The HNSW index supports efficient approximate nearest-neighbor search, and `halfvec(3072)` supports the configured embedding dimensionality.
 
 Scaling paths:
 

@@ -20,7 +20,9 @@ def upgrade() -> None:
     bind = op.get_bind()
     is_postgres = bind.dialect.name == "postgresql"
     if is_postgres:
-        op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        op.execute("CREATE SCHEMA IF NOT EXISTS extensions")
+        op.execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions")
+        op.execute("SET search_path TO public, extensions")
 
     op.create_table(
         "documents",

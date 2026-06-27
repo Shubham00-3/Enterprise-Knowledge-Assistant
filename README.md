@@ -1,6 +1,6 @@
 # Enterprise Knowledge Assistant
 
-An enterprise knowledge assistant that answers employee questions from internal documents using Retrieval Augmented Generation (RAG). The project is built as a production-oriented assignment submission: it includes document ingestion, hybrid retrieval, grounded answer generation, source citations, feedback collection, evaluation metrics, and deployment configuration for Vercel + Railway.
+An enterprise knowledge assistant that answers employee questions from internal documents using Retrieval Augmented Generation (RAG). The project is built as a production-oriented assignment submission: it includes document ingestion, hybrid retrieval, grounded answer generation, source citations, feedback collection, evaluation metrics, and deployment configuration for Vercel + Railway + Supabase.
 
 ## Architecture Overview
 
@@ -8,13 +8,13 @@ The system has three main runtime parts:
 
 - **Frontend:** React/Vite application deployed on Vercel. It provides the chat interface, document status panel, citation cards, confidence/status indicators, and feedback buttons.
 - **Backend:** FastAPI application deployed on Railway. It exposes `/ask`, `/documents`, `/feedback`, `/healthz`, `/readyz`, and admin-protected `/ingest`.
-- **Database and vector store:** Railway Postgres with pgvector. It stores documents, chunks, embeddings, conversations, messages, feedback, and evaluation runs.
+- **Database and vector store:** Supabase Postgres with pgvector. It stores documents, chunks, embeddings, conversations, messages, feedback, and evaluation runs.
 
 ```mermaid
 flowchart LR
   User["Employee"] --> UI["React/Vite UI"]
   UI --> API["FastAPI API"]
-  API --> DB["Postgres + pgvector"]
+  API --> DB["Supabase Postgres + pgvector"]
   API --> OAI["OpenAI API"]
   CLI["Ingestion CLI"] --> DB
   CLI --> OAI
@@ -36,7 +36,7 @@ Request flow:
 - Python 3.11+
 - Node.js 20+
 - OpenAI API key for full model-backed behavior
-- Railway Postgres + pgvector for production deployment
+- Supabase Postgres with pgvector enabled for production deployment
 
 The app can run locally without `OPENAI_API_KEY`; it uses deterministic fallback embeddings and fallback answer generation so the interface and API remain testable.
 
@@ -101,13 +101,15 @@ VITE_API_AUTH_TOKEN=
 
 ### Deployment
 
-Backend deployment target: Railway.
+Backend deployment target: Railway. Database target: Supabase Postgres + pgvector.
 
-1. Create a Railway project.
-2. Add Railway Postgres with pgvector support.
-3. Configure backend environment variables.
-4. Deploy from GitHub using `railway.json`.
-5. Run ingestion once against the deployed database.
+1. Create a Supabase project.
+2. In Supabase, enable the `vector` extension from **Database -> Extensions**.
+3. Copy the Supabase Postgres connection string. Prefer **Direct connection** for migrations or **Session Pooler** if direct networking is unavailable. Include `sslmode=require`.
+4. Create a Railway project for the FastAPI backend.
+5. Deploy from GitHub using `railway.json`.
+6. Set Railway `DATABASE_URL` to the Supabase connection string.
+7. Run ingestion once against the deployed database.
 
 Frontend deployment target: Vercel.
 
@@ -122,8 +124,8 @@ Frontend deployment target: Vercel.
 |---|---|---|
 | Backend | FastAPI | Fast, typed, simple API development with strong OpenAPI docs. |
 | Frontend | React + Vite | Polished demo UI with lightweight build and clean Vercel deployment. |
-| Database | Railway Postgres | One production database for documents, chat state, feedback, and eval records. |
-| Vector search | pgvector | Avoids a separate vector database while still supporting semantic search. |
+| Database | Supabase Postgres | Managed Postgres with dashboard, SQL editor, future Auth/Storage path, and pgvector support. |
+| Vector search | Supabase pgvector | Avoids a separate vector database while still supporting semantic search. |
 | Vector index | `halfvec(3072)` + HNSW | Fits 3072-dimension embeddings and supports efficient cosine search in Postgres. |
 | Embeddings | `text-embedding-3-large` | Strong semantic retrieval quality; dimensions are configurable. |
 | LLM | Env-configurable OpenAI model | Keeps model choice swappable without changing code. |
